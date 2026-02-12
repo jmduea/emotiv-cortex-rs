@@ -78,6 +78,31 @@ See the [`examples/`](examples/) directory for complete working examples coverin
 For endpoint-by-endpoint compatibility tracking against the official API reference,
 see [`docs/api-parity.md`](docs/api-parity.md).
 
+## Testing
+
+Run the full crate test suite (unit tests, deterministic mock integration tests, and live smokes):
+
+```bash
+cargo test -p emotiv-cortex-v2
+```
+
+Live smoke tests auto-skip when prerequisites are missing, and can be forced off with:
+
+```bash
+EMOTIV_SKIP_LIVE_TESTS=1 cargo test -p emotiv-cortex-v2
+```
+
+To run live smoke tests against Cortex locally, set:
+
+```bash
+export EMOTIV_CLIENT_ID="your-client-id"
+export EMOTIV_CLIENT_SECRET="your-client-secret"
+# optional:
+export EMOTIV_CORTEX_URL="wss://localhost:6868"
+export EMOTIV_HEADSET_ID="INSIGHT-XXXXXXXX"
+unset EMOTIV_SKIP_LIVE_TESTS
+```
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.

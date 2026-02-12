@@ -411,6 +411,90 @@ fn dirs_config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl EnvGuard {
+        fn capture(keys: &[&'static str]) -> Self {
+            let saved = keys.iter().map(|k| (*k, std::env::var_os(k))).collect();
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                if let Some(value) = value {
+                    std::env::set_var(key, value);
+                } else {
+                    std::env::remove_var(key);
+                }
+            }
+        }
+    }
+
+    struct CurrentDirGuard {
+        original: PathBuf,
+    }
+
+    impl CurrentDirGuard {
+        fn enter(path: &Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            Self { original }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.original).unwrap();
+        }
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "emotiv-cortex-config-tests-{}-{}-{}",
+            label,
+            std::process::id(),
+            now
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn write_minimal_config(path: &Path, id: &str, secret: &str, url: &str) {
+        fs::write(
+            path,
+            format!(
+                r#"
+client_id = "{}"
+client_secret = "{}"
+cortex_url = "{}"
+"#,
+                id, secret, url
+            ),
+        )
+        .unwrap();
+    }
 
     #[test]
     fn test_new_defaults() {
@@ -479,5 +563,188 @@ mod tests {
         assert!(!config.reconnect.enabled);
         assert_eq!(config.reconnect.max_attempts, 5);
         assert_eq!(config.health.interval_secs, 60);
+    }
+
+    #[test]
+    fn test_from_env_requires_credentials_and_applies_overrides() {
+        let _lock = env_lock();
+        let _env = EnvGuard::capture(&[
+            "EMOTIV_CLIENT_ID",
+            "EMOTIV_CLIENT_SECRET",
+            "EMOTIV_CORTEX_URL",
+            "EMOTIV_LICENSE",
+        ]);
+
+        std::env::remove_var("EMOTIV_CLIENT_ID");
+        std::env::remove_var("EMOTIV_CLIENT_SECRET");
+        std::env::remove_var("EMOTIV_CORTEX_URL");
+        std::env::remove_var("EMOTIV_LICENSE");
+
+        let missing_id = CortexConfig::from_env().unwrap_err();
+        assert!(matches!(missing_id, CortexError::ConfigError { .. }));
+        assert!(
+            missing_id.to_string().contains("EMOTIV_CLIENT_ID"),
+            "unexpected error: {missing_id}"
+        );
+
+        std::env::set_var("EMOTIV_CLIENT_ID", "env-id");
+        let missing_secret = CortexConfig::from_env().unwrap_err();
+        assert!(matches!(missing_secret, CortexError::ConfigError { .. }));
+        assert!(
+            missing_secret.to_string().contains("EMOTIV_CLIENT_SECRET"),
+            "unexpected error: {missing_secret}"
+        );
+
+        std::env::set_var("EMOTIV_CLIENT_SECRET", "env-secret");
+        std::env::set_var("EMOTIV_CORTEX_URL", "wss://env.example:6868");
+        std::env::set_var("EMOTIV_LICENSE", "LICENSE-FROM-ENV");
+
+        let config = CortexConfig::from_env().unwrap();
+        assert_eq!(config.client_id, "env-id");
+        assert_eq!(config.client_secret, "env-secret");
+        assert_eq!(config.cortex_url, "wss://env.example:6868");
+        assert_eq!(config.license.as_deref(), Some("LICENSE-FROM-ENV"));
+    }
+
+    #[test]
+    fn test_from_file_env_overrides_precedence() {
+        let _lock = env_lock();
+        let _env = EnvGuard::capture(&[
+            "EMOTIV_CLIENT_ID",
+            "EMOTIV_CLIENT_SECRET",
+            "EMOTIV_CORTEX_URL",
+            "EMOTIV_LICENSE",
+        ]);
+
+        let dir = unique_temp_dir("from-file-overrides");
+        let config_path = dir.join("cortex.toml");
+        fs::write(
+            &config_path,
+            r#"
+client_id = "file-id"
+client_secret = "file-secret"
+cortex_url = "wss://file.example:6868"
+license = "FILE-LICENSE"
+"#,
+        )
+        .unwrap();
+
+        std::env::set_var("EMOTIV_CLIENT_ID", "env-id");
+        std::env::set_var("EMOTIV_CLIENT_SECRET", "env-secret");
+        std::env::set_var("EMOTIV_CORTEX_URL", "wss://env.example:6868");
+        std::env::set_var("EMOTIV_LICENSE", "ENV-LICENSE");
+
+        let config = CortexConfig::from_file(&config_path).unwrap();
+        assert_eq!(config.client_id, "env-id");
+        assert_eq!(config.client_secret, "env-secret");
+        assert_eq!(config.cortex_url, "wss://env.example:6868");
+        assert_eq!(config.license.as_deref(), Some("ENV-LICENSE"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn test_discover_search_priority() {
+        let _lock = env_lock();
+        let mut env_keys = vec![
+            "EMOTIV_CLIENT_ID",
+            "EMOTIV_CLIENT_SECRET",
+            "EMOTIV_CORTEX_URL",
+            "EMOTIV_LICENSE",
+            "CORTEX_CONFIG",
+        ];
+        #[cfg(target_os = "windows")]
+        env_keys.push("APPDATA");
+        #[cfg(not(target_os = "windows"))]
+        env_keys.push("HOME");
+        let _env = EnvGuard::capture(&env_keys);
+
+        let root = unique_temp_dir("discover-priority");
+        let cwd = root.join("cwd");
+        fs::create_dir_all(&cwd).unwrap();
+
+        let explicit_path = root.join("explicit.toml");
+        let env_path = root.join("env.toml");
+        write_minimal_config(&explicit_path, "explicit-id", "explicit-secret", "wss://explicit");
+        write_minimal_config(&env_path, "env-file-id", "env-file-secret", "wss://env-file");
+
+        let home_root = root.join("home-root");
+        let home_config = {
+            #[cfg(target_os = "windows")]
+            {
+                std::env::set_var("APPDATA", &home_root);
+                home_root.join("emotiv-cortex").join("cortex.toml")
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                std::env::set_var("HOME", &home_root);
+                home_root
+                    .join(".config")
+                    .join("emotiv-cortex")
+                    .join("cortex.toml")
+            }
+        };
+        fs::create_dir_all(home_config.parent().unwrap()).unwrap();
+        write_minimal_config(&home_config, "home-id", "home-secret", "wss://home");
+        std::env::remove_var("EMOTIV_CLIENT_ID");
+        std::env::remove_var("EMOTIV_CLIENT_SECRET");
+        std::env::remove_var("EMOTIV_CORTEX_URL");
+
+        {
+            let _cwd = CurrentDirGuard::enter(&cwd);
+
+            std::env::set_var("CORTEX_CONFIG", env_path.to_string_lossy().to_string());
+            write_minimal_config(
+                &cwd.join("cortex.toml"),
+                "local-id",
+                "local-secret",
+                "wss://local",
+            );
+
+            let explicit = CortexConfig::discover(Some(&explicit_path)).unwrap();
+            assert_eq!(explicit.client_id, "explicit-id");
+
+            let via_env_pointer = CortexConfig::discover(None).unwrap();
+            assert_eq!(via_env_pointer.client_id, "env-file-id");
+
+            std::env::remove_var("CORTEX_CONFIG");
+            let via_local = CortexConfig::discover(None).unwrap();
+            assert_eq!(via_local.client_id, "local-id");
+
+            fs::remove_file(cwd.join("cortex.toml")).unwrap();
+            let via_home = CortexConfig::discover(None).unwrap();
+            assert_eq!(via_home.client_id, "home-id");
+
+            fs::remove_file(&home_config).unwrap();
+            std::env::set_var("EMOTIV_CLIENT_ID", "fallback-id");
+            std::env::set_var("EMOTIV_CLIENT_SECRET", "fallback-secret");
+            std::env::set_var("EMOTIV_CORTEX_URL", "wss://fallback");
+            let via_env_only = CortexConfig::discover(None).unwrap();
+            assert_eq!(via_env_only.client_id, "fallback-id");
+            assert_eq!(via_env_only.client_secret, "fallback-secret");
+            assert_eq!(via_env_only.cortex_url, "wss://fallback");
+        }
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn test_from_file_missing_and_invalid_errors() {
+        let _lock = env_lock();
+        let dir = unique_temp_dir("from-file-errors");
+
+        let missing = CortexConfig::from_file(dir.join("missing.toml")).unwrap_err();
+        assert!(matches!(missing, CortexError::ConfigError { .. }));
+        assert!(
+            missing.to_string().contains("Failed to read config file"),
+            "unexpected error: {missing}"
+        );
+
+        let invalid_path = dir.join("invalid.toml");
+        fs::write(&invalid_path, "client_id = [").unwrap();
+        let invalid = CortexConfig::from_file(&invalid_path).unwrap_err();
+        assert!(matches!(invalid, CortexError::ConfigError { .. }));
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }

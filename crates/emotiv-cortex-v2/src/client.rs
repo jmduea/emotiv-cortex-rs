@@ -2077,7 +2077,26 @@ mod tests {
     }
 
     #[test]
+    fn test_update_headset_custom_info_omits_optional_fields_when_none() {
+        let params =
+            CortexClient::update_headset_custom_info_params("token", "HS-123", None, None);
+        assert_eq!(params["headsetId"], "HS-123");
+        assert_eq!(params["headset"], "HS-123");
+        assert!(params.get("headbandPosition").is_none());
+        assert!(params.get("customName").is_none());
+    }
+
+    #[test]
     fn test_config_mapping_create_params_validation() {
+        let empty_name = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Create {
+                name: "   ".into(),
+                mappings: serde_json::json!({"CMS":"TP9"}),
+            },
+        );
+        assert!(matches!(empty_name, Err(CortexError::ProtocolError { .. })));
+
         let invalid = CortexClient::config_mapping_params(
             "token",
             ConfigMappingRequest::Create {
@@ -2144,6 +2163,39 @@ mod tests {
         assert!(matches!(valid.0, ConfigMappingMode::Update));
         assert_eq!(valid.1["uuid"], "uuid-1");
         assert_eq!(valid.1["name"], "new");
+    }
+
+    #[test]
+    fn test_config_mapping_update_validation_cases() {
+        let empty_uuid = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "  ".into(),
+                name: Some("new-name".into()),
+                mappings: None,
+            },
+        );
+        assert!(matches!(empty_uuid, Err(CortexError::ProtocolError { .. })));
+
+        let empty_name = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "uuid-1".into(),
+                name: Some("".into()),
+                mappings: None,
+            },
+        );
+        assert!(matches!(empty_name, Err(CortexError::ProtocolError { .. })));
+
+        let invalid_mappings = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "uuid-1".into(),
+                name: None,
+                mappings: Some(serde_json::json!(["bad-shape"])),
+            },
+        );
+        assert!(matches!(invalid_mappings, Err(CortexError::ProtocolError { .. })));
     }
 
     #[test]

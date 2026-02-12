@@ -24,6 +24,8 @@ jobs:
       - name: Cargo check workspace
         run: cargo check --workspace
       - name: Test emotiv-cortex-v2
+        env:
+          EMOTIV_SKIP_LIVE_TESTS: "1"
         run: cargo test -p emotiv-cortex-v2
       - name: Test emotiv-cortex-v2 docs
         run: cargo test -p emotiv-cortex-v2 --doc

@@ -1608,6 +1608,27 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_eq_quality_insight() {
+        // [battery_pct, overall_pct, sample_rate_quality, AF3, AF4, T7, T8, Pz]
+        let eq: Vec<serde_json::Value> =
+            serde_json::from_str(r#"[88, 75, 0.9, 4, 3, 2, 1, 4]"#).unwrap();
+
+        let parsed = EegQuality::from_eq_array(&eq, 5).unwrap();
+        assert_eq!(parsed.battery_percent, 88);
+        assert!((parsed.overall - 0.75).abs() < f32::EPSILON);
+        assert!((parsed.sample_rate_quality - 0.9).abs() < f32::EPSILON);
+        assert_eq!(parsed.sensor_quality.len(), 5);
+        assert!((parsed.sensor_quality[0] - 1.0).abs() < f32::EPSILON);
+        assert!((parsed.sensor_quality[1] - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_parse_eq_quality_too_short() {
+        let eq: Vec<serde_json::Value> = serde_json::from_str(r#"[88, 75, 1.0, 4]"#).unwrap();
+        assert!(EegQuality::from_eq_array(&eq, 5).is_none());
+    }
+
+    #[test]
     fn test_parse_motion_data() {
         // [COUNTER, INTERPOLATED, Q0, Q1, Q2, Q3, ACCX, ACCY, ACCZ, MAGX, MAGY, MAGZ]
         let mot = vec![
@@ -1671,6 +1692,58 @@ mod tests {
 
         let event: PowEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.pow.len(), 5);
+    }
+
+    #[test]
+    fn test_deserialize_met_event() {
+        let json = r#"{
+            "sid": "session-uuid-123",
+            "time": 1609459200.0,
+            "met": [0.2, 0.3, 0.4, 0.1]
+        }"#;
+
+        let event: MetEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.sid, "session-uuid-123");
+        assert_eq!(event.met.len(), 4);
+    }
+
+    #[test]
+    fn test_deserialize_com_event() {
+        let json = r#"{
+            "sid": "session-uuid-123",
+            "time": 1609459200.0,
+            "com": ["push", 0.82]
+        }"#;
+
+        let event: ComEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.com.len(), 2);
+        assert_eq!(event.com[0].as_str(), Some("push"));
+    }
+
+    #[test]
+    fn test_deserialize_fac_event() {
+        let json = r#"{
+            "sid": "session-uuid-123",
+            "time": 1609459200.0,
+            "fac": ["blink", "surprise", 0.9, "smile", 0.7]
+        }"#;
+
+        let event: FacEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.fac.len(), 5);
+        assert_eq!(event.fac[0].as_str(), Some("blink"));
+    }
+
+    #[test]
+    fn test_deserialize_sys_event() {
+        let json = r#"{
+            "sid": "session-uuid-123",
+            "time": 1609459200.0,
+            "sys": ["mc_action", "start"]
+        }"#;
+
+        let event: SysEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.sys.len(), 2);
+        assert_eq!(event.sys[0].as_str(), Some("mc_action"));
     }
 
     #[test]
@@ -1864,6 +1937,27 @@ mod tests {
     #[test]
     fn test_get_user_info_method_name() {
         assert_eq!(Methods::GET_USER_INFO, "getUserInformation");
+    }
+
+    #[test]
+    fn test_streams_all_invariants() {
+        use std::collections::HashSet;
+
+        let all = Streams::ALL;
+        assert_eq!(all.len(), 9);
+
+        let unique: HashSet<&str> = all.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "Streams::ALL contains duplicates");
+
+        assert!(unique.contains(Streams::EEG));
+        assert!(unique.contains(Streams::DEV));
+        assert!(unique.contains(Streams::MOT));
+        assert!(unique.contains(Streams::EQ));
+        assert!(unique.contains(Streams::POW));
+        assert!(unique.contains(Streams::MET));
+        assert!(unique.contains(Streams::COM));
+        assert!(unique.contains(Streams::FAC));
+        assert!(unique.contains(Streams::SYS));
     }
 
     #[test]

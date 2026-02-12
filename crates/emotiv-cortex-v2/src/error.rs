@@ -324,4 +324,51 @@ mod tests {
         assert!(CortexError::ConnectionLost { reason: "x".into() }.is_connection_error());
         assert!(!CortexError::TokenExpired.is_connection_error());
     }
+
+    #[test]
+    fn test_from_tungstenite_error() {
+        let ws_error = tokio_tungstenite::tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe",
+        ));
+        let err: CortexError = ws_error.into();
+        assert!(matches!(err, CortexError::WebSocket(_)));
+        assert!(err.to_string().contains("WebSocket error"));
+    }
+
+    #[test]
+    fn test_from_toml_error_conversion() {
+        #[derive(Debug, serde::Deserialize)]
+        struct DummyConfig {
+            _value: String,
+        }
+
+        let toml_err = toml::from_str::<DummyConfig>("value = [").unwrap_err();
+        let err: CortexError = toml_err.into();
+        assert!(matches!(err, CortexError::ConfigError { .. }));
+        assert!(err.to_string().contains("Configuration error"));
+    }
+
+    #[test]
+    fn test_is_retryable_additional_variants() {
+        assert!(CortexError::WebSocket("transport reset".into()).is_retryable());
+        assert!(!CortexError::ConnectionFailed {
+            url: "wss://localhost:6868".into(),
+            reason: "refused".into(),
+        }
+        .is_retryable());
+        assert!(!CortexError::ProtocolError { reason: "bad frame".into() }.is_retryable());
+    }
+
+    #[test]
+    fn test_is_connection_error_additional_variants() {
+        assert!(CortexError::ConnectionFailed {
+            url: "wss://localhost:6868".into(),
+            reason: "dial failed".into(),
+        }
+        .is_connection_error());
+        assert!(CortexError::WebSocket("closed".into()).is_connection_error());
+        assert!(!CortexError::Timeout { seconds: 1 }.is_connection_error());
+        assert!(!CortexError::AuthenticationFailed { reason: "bad auth".into() }.is_connection_error());
+    }
 }

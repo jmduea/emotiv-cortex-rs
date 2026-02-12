@@ -258,4 +258,69 @@ mod tests {
         let result = with_retry(&RetryPolicy::query(), || async { Ok::<_, CortexError>(99) }).await;
         assert_eq!(result.unwrap(), 99);
     }
+
+    #[test]
+    fn test_policy_constructor_defaults() {
+        match RetryPolicy::query() {
+            RetryPolicy::Backoff {
+                max_retries,
+                base_delay,
+                max_delay,
+            } => {
+                assert_eq!(max_retries, 3);
+                assert_eq!(base_delay, Duration::from_millis(500));
+                assert_eq!(max_delay, Duration::from_secs(10));
+            }
+            RetryPolicy::None => panic!("query policy should use backoff"),
+        }
+
+        match RetryPolicy::idempotent() {
+            RetryPolicy::Backoff {
+                max_retries,
+                base_delay,
+                max_delay,
+            } => {
+                assert_eq!(max_retries, 2);
+                assert_eq!(base_delay, Duration::from_secs(1));
+                assert_eq!(max_delay, Duration::from_secs(15));
+            }
+            RetryPolicy::None => panic!("idempotent policy should use backoff"),
+        }
+
+        match RetryPolicy::stop() {
+            RetryPolicy::Backoff {
+                max_retries,
+                base_delay,
+                max_delay,
+            } => {
+                assert_eq!(max_retries, 2);
+                assert_eq!(base_delay, Duration::from_secs(1));
+                assert_eq!(max_delay, Duration::from_secs(15));
+            }
+            RetryPolicy::None => panic!("stop policy should use backoff"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_backoff_delay_caps_at_max_delay() {
+        let attempts = AtomicU32::new(0);
+        let start = std::time::Instant::now();
+
+        let result = with_retry(
+            &RetryPolicy::custom(3, Duration::from_millis(1), Duration::from_millis(2)),
+            || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err::<(), _>(CortexError::Timeout { seconds: 1 }) }
+            },
+        )
+        .await;
+
+        assert!(matches!(result.unwrap_err(), CortexError::RetriesExhausted { .. }));
+        assert_eq!(attempts.load(Ordering::SeqCst), 4); // initial + 3 retries
+        assert!(
+            start.elapsed() >= Duration::from_millis(4),
+            "elapsed {:?} was too short for capped backoff",
+            start.elapsed()
+        );
+    }
 }
