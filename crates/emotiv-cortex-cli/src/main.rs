@@ -16,7 +16,8 @@ mod lsl;
 
 use emotiv_cortex_v2::headset::HeadsetModel;
 use emotiv_cortex_v2::protocol::{
-    DetectionType, ExportFormat, HeadsetInfo, ProfileAction, Streams, TrainingStatus,
+    DetectionType, ExportFormat, HeadsetInfo, ProfileAction, QueryHeadsetsOptions, Streams,
+    TrainingStatus,
 };
 use emotiv_cortex_v2::{streams, CortexClient, CortexConfig, CortexResult};
 
@@ -377,7 +378,11 @@ async fn cmd_headsets(state: &mut SessionState) {
         .unwrap_or(None);
 
     match sel {
-        Some(0) => match state.client.query_headsets().await {
+        Some(0) => match state
+            .client
+            .query_headsets(QueryHeadsetsOptions::default())
+            .await
+        {
             Ok(headsets) => {
                 if headsets.is_empty() {
                     println!("No headsets found.");
@@ -900,7 +905,10 @@ async fn quickstart_lsl(state: &mut SessionState) -> Result<(), Box<dyn std::err
 
     // 2. Find first INSIGHT headset
     print!("  Querying headsets... ");
-    let headsets = state.client.query_headsets().await?;
+    let headsets = state
+        .client
+        .query_headsets(QueryHeadsetsOptions::default())
+        .await?;
     let insight = headsets
         .iter()
         .find(|h| {
@@ -1551,8 +1559,10 @@ async fn cmd_profiles(state: &mut SessionState) {
                 return;
             }
             match state.client.get_current_profile(&token, &headset_id).await {
-                Ok(Some(p)) => println!("Current profile: {}", p.name.cyan()),
-                Ok(None) => println!("No profile loaded."),
+                Ok(p) => match p.name {
+                    Some(name) => println!("Current profile: {}", name.cyan()),
+                    None => println!("No profile loaded."),
+                },
                 Err(e) => eprintln!("{} {}", "Error:".red(), e),
             }
         }

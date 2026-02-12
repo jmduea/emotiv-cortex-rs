@@ -11,6 +11,7 @@
 //!
 //! ```no_run
 //! use emotiv_cortex_v2::{CortexConfig, reconnect::ResilientClient};
+//! use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
 //!
 //! # async fn demo() -> emotiv_cortex_v2::CortexResult<()> {
 //! let config = CortexConfig::discover(None)?;
@@ -25,7 +26,7 @@
 //! });
 //!
 //! // Use like CortexClient, but without passing tokens
-//! let headsets = client.query_headsets().await?;
+//! let headsets = client.query_headsets(QueryHeadsetsOptions::default()).await?;
 //! let session = client.create_session(&headsets[0].id).await?;
 //! let _ = session;
 //! # Ok(())
@@ -64,9 +65,10 @@ use crate::config::CortexConfig;
 use crate::error::{CortexError, CortexResult};
 use crate::health::{HealthMonitor, HealthStatus};
 use crate::protocol::{
-    DemographicAttribute, DetectionInfo, DetectionType, ExportFormat, HeadsetInfo, MarkerInfo,
-    ProfileAction, ProfileInfo, RecordInfo, SessionInfo, SubjectInfo, TrainedSignatureActions,
-    TrainingStatus, TrainingTime, UserLoginInfo,
+    ConfigMappingRequest, ConfigMappingResponse, CurrentProfileInfo, DemographicAttribute,
+    DetectionInfo, DetectionType, ExportFormat, HeadsetClockSyncResult, HeadsetInfo, MarkerInfo,
+    ProfileAction, ProfileInfo, QueryHeadsetsOptions, RecordInfo, SessionInfo, SubjectInfo,
+    TrainedSignatureActions, TrainingStatus, TrainingTime, UserLoginInfo,
 };
 
 /// Token refresh interval — re-authenticate before the token expires.
@@ -457,8 +459,15 @@ impl ResilientClient {
     // ─── Headset Management ─────────────────────────────────────────────
 
     /// Query available headsets.
-    pub async fn query_headsets(&self) -> CortexResult<Vec<HeadsetInfo>> {
-        self.exec(|c| async move { c.query_headsets().await }).await
+    pub async fn query_headsets(
+        &self,
+        options: QueryHeadsetsOptions,
+    ) -> CortexResult<Vec<HeadsetInfo>> {
+        self.exec(move |c| {
+            let options = options.clone();
+            async move { c.query_headsets(options).await }
+        })
+        .await
     }
 
     /// Connect to a headset.
@@ -491,11 +500,11 @@ impl ResilientClient {
     pub async fn sync_with_headset_clock(
         &self,
         headset_id: &str,
-    ) -> CortexResult<serde_json::Value> {
+    ) -> CortexResult<HeadsetClockSyncResult> {
         let id = headset_id.to_string();
-        self.exec_with_token(move |c, token| {
+        self.exec(move |c| {
             let id = id.clone();
-            async move { c.sync_with_headset_clock(&token, &id).await }
+            async move { c.sync_with_headset_clock(&id).await }
         })
         .await
     }
@@ -503,34 +512,11 @@ impl ResilientClient {
     /// Manage EEG channel mapping configurations for an EPOC Flex headset.
     pub async fn config_mapping(
         &self,
-        headset_id: &str,
-        status: &str,
-        mapping_name: Option<&str>,
-        mapping_uuid: Option<&str>,
-        mappings: Option<&serde_json::Value>,
-    ) -> CortexResult<serde_json::Value> {
-        let id = headset_id.to_string();
-        let st = status.to_string();
-        let name = mapping_name.map(|s| s.to_string());
-        let uuid = mapping_uuid.map(|s| s.to_string());
-        let m = mappings.cloned();
+        request: ConfigMappingRequest,
+    ) -> CortexResult<ConfigMappingResponse> {
         self.exec_with_token(move |c, token| {
-            let id = id.clone();
-            let st = st.clone();
-            let name = name.clone();
-            let uuid = uuid.clone();
-            let m = m.clone();
-            async move {
-                c.config_mapping(
-                    &token,
-                    &id,
-                    &st,
-                    name.as_deref(),
-                    uuid.as_deref(),
-                    m.as_ref(),
-                )
-                .await
-            }
+            let request = request.clone();
+            async move { c.config_mapping(&token, request).await }
         })
         .await
     }
@@ -942,7 +928,7 @@ impl ResilientClient {
     }
 
     /// Get the profile currently loaded for a headset.
-    pub async fn get_current_profile(&self, headset_id: &str) -> CortexResult<Option<ProfileInfo>> {
+    pub async fn get_current_profile(&self, headset_id: &str) -> CortexResult<CurrentProfileInfo> {
         let id = headset_id.to_string();
         self.exec_with_token(move |c, token| {
             let id = id.clone();

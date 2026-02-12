@@ -5,6 +5,7 @@
 //! ```
 
 use emotiv_cortex_v2::reconnect::{ConnectionEvent, ResilientClient};
+use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
 use emotiv_cortex_v2::CortexConfig;
 
 #[tokio::main]
@@ -44,7 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let info = client.get_cortex_info().await?;
     println!("Cortex info: {}", info);
 
-    let headsets = client.query_headsets().await?;
+    let headsets = client
+        .query_headsets(QueryHeadsetsOptions::default())
+        .await?;
     println!("Found {} headset(s)", headsets.len());
 
     for h in &headsets {

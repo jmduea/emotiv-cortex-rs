@@ -4,7 +4,7 @@
 //! EMOTIV_CLIENT_ID=xxx EMOTIV_CLIENT_SECRET=yyy cargo run --example records
 //! ```
 
-use emotiv_cortex_v2::protocol::ExportFormat;
+use emotiv_cortex_v2::protocol::{ExportFormat, QueryHeadsetsOptions};
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
 #[tokio::main]
@@ -17,7 +17,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .authenticate(&config.client_id, &config.client_secret)
         .await?;
 
-    let headsets = client.query_headsets().await?;
+    let headsets = client
+        .query_headsets(QueryHeadsetsOptions::default())
+        .await?;
     let headset = headsets.first().ok_or("No headset found")?;
     println!("Using headset: {}", headset.id);
 

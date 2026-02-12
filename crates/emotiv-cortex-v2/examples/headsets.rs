@@ -5,6 +5,7 @@
 //! ```
 
 use emotiv_cortex_v2::headset::HeadsetModel;
+use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
 #[tokio::main]
@@ -25,7 +26,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
     // Query discovered headsets
-    let headsets = client.query_headsets().await?;
+    let headsets = client
+        .query_headsets(QueryHeadsetsOptions::default())
+        .await?;
 
     if headsets.is_empty() {
         println!("No headsets found. Make sure your headset is powered on.");

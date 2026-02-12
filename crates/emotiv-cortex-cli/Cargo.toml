@@ -1,6 +1,6 @@
 [package]
 name = "emotiv-cortex-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
@@ -24,7 +24,7 @@ lsl = ["dep:lsl"]
 
 # Lab Streaming Layer (optional)
 lsl = { version = "0.1", optional = true }
-emotiv-cortex-v2 = { version = "=0.1.0", path = "../emotiv-cortex-v2" }
+emotiv-cortex-v2 = { version = "=0.2.0", path = "../emotiv-cortex-v2" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

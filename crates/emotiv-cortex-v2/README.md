@@ -28,12 +28,13 @@ Provides a complete, typed interface to the Emotiv Cortex service for interactin
 
 ```toml
 [dependencies]
-emotiv-cortex-v2 = "0.1"
+emotiv-cortex-v2 = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
 ```rust
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
+use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
 
 #[tokio::main]
 async fn main() -> emotiv_cortex_v2::CortexResult<()> {
@@ -44,7 +45,7 @@ async fn main() -> emotiv_cortex_v2::CortexResult<()> {
     println!("Cortex: {:?}", info);
 
     let token = client.authenticate(&config.client_id, &config.client_secret).await?;
-    let headsets = client.query_headsets().await?;
+    let headsets = client.query_headsets(QueryHeadsetsOptions::default()).await?;
     for h in &headsets {
         println!("{} ({})", h.id, h.status);
     }

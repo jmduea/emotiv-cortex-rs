@@ -44,7 +44,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures::{stream::SplitSink, stream::SplitStream, SinkExt, StreamExt};
 use native_tls::TlsConnector as NativeTlsConnector;
@@ -60,10 +60,11 @@ use tokio_tungstenite::{
 use crate::config::CortexConfig;
 use crate::error::{CortexError, CortexResult};
 use crate::protocol::{
-    CortexRequest, CortexResponse, DemographicAttribute, DetectionInfo, DetectionType,
-    ExportFormat, HeadsetInfo, MarkerInfo, Methods, ProfileAction, ProfileInfo, RecordInfo,
-    SessionInfo, Streams, SubjectInfo, TrainedSignatureActions, TrainingStatus, TrainingTime,
-    UserLoginInfo,
+    ConfigMappingListValue, ConfigMappingMode, ConfigMappingRequest, ConfigMappingResponse,
+    ConfigMappingValue, CortexRequest, CortexResponse, CurrentProfileInfo, DemographicAttribute,
+    DetectionInfo, DetectionType, ExportFormat, HeadsetClockSyncResult, HeadsetInfo, MarkerInfo,
+    Methods, ProfileAction, ProfileInfo, QueryHeadsetsOptions, RecordInfo, SessionInfo, Streams,
+    SubjectInfo, TrainedSignatureActions, TrainingStatus, TrainingTime, UserLoginInfo,
 };
 
 /// Connection timeout for the initial WebSocket handshake.
@@ -119,6 +120,9 @@ pub struct CortexClient {
 
     /// RPC call timeout (from config).
     rpc_timeout: Duration,
+
+    /// Monotonic clock origin used for `syncWithHeadsetClock`.
+    clock_origin: Instant,
 }
 
 impl CortexClient {
@@ -194,6 +198,7 @@ impl CortexClient {
             reader_running,
             stream_senders,
             rpc_timeout,
+            clock_origin: Instant::now(),
         })
     }
 
@@ -378,13 +383,128 @@ impl CortexClient {
         Ok(result)
     }
 
-    fn sync_with_headset_clock_params(cortex_token: &str, headset_id: &str) -> serde_json::Value {
+    fn query_headsets_params(options: QueryHeadsetsOptions) -> serde_json::Value {
+        let mut params = serde_json::json!({});
+        if let Some(id) = options.id {
+            params["id"] = serde_json::json!(id);
+        }
+        if options.include_flex_mappings {
+            params["includeFlexMappings"] = serde_json::json!(true);
+        }
+        params
+    }
+
+    fn sync_with_headset_clock_params(
+        &self,
+        headset_id: &str,
+    ) -> CortexResult<serde_json::Value> {
+        let monotonic_time = self.clock_origin.elapsed().as_secs_f64();
+        let system_duration =
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| CortexError::ProtocolError {
+                    reason: format!("System clock is before UNIX epoch: {}", e),
+                })?;
+
+        Ok(Self::sync_with_headset_clock_params_with_times(
+            headset_id,
+            monotonic_time,
+            system_duration.as_millis() as u64,
+        ))
+    }
+
+    fn sync_with_headset_clock_params_with_times(
+        headset_id: &str,
+        monotonic_time: f64,
+        system_time: u64,
+    ) -> serde_json::Value {
         serde_json::json!({
-            "cortexToken": cortex_token,
             "headset": headset_id,
-            // Compatibility with docs/runtime variants that use headsetId.
-            "headsetId": headset_id,
+            "monotonicTime": monotonic_time,
+            "systemTime": system_time,
         })
+    }
+
+    fn config_mapping_params(
+        cortex_token: &str,
+        request: ConfigMappingRequest,
+    ) -> CortexResult<(ConfigMappingMode, serde_json::Value)> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": request.mode().as_str(),
+        });
+
+        match request {
+            ConfigMappingRequest::Create { name, mappings } => {
+                if name.trim().is_empty() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping create requires non-empty name".into(),
+                    });
+                }
+                if !mappings.is_object() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping create requires mappings as an object".into(),
+                    });
+                }
+                params["name"] = serde_json::json!(name);
+                params["mappings"] = mappings;
+                Ok((ConfigMappingMode::Create, params))
+            }
+            ConfigMappingRequest::Get => Ok((ConfigMappingMode::Get, params)),
+            ConfigMappingRequest::Read { uuid } => {
+                if uuid.trim().is_empty() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping read requires non-empty uuid".into(),
+                    });
+                }
+                params["uuid"] = serde_json::json!(uuid);
+                Ok((ConfigMappingMode::Read, params))
+            }
+            ConfigMappingRequest::Update {
+                uuid,
+                name,
+                mappings,
+            } => {
+                if uuid.trim().is_empty() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping update requires non-empty uuid".into(),
+                    });
+                }
+                if name.is_none() && mappings.is_none() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping update requires name and/or mappings".into(),
+                    });
+                }
+                if mappings.as_ref().is_some_and(|m| !m.is_object()) {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping update requires mappings as an object".into(),
+                    });
+                }
+
+                params["uuid"] = serde_json::json!(uuid);
+                if let Some(value) = name {
+                    if value.trim().is_empty() {
+                        return Err(CortexError::ProtocolError {
+                            reason: "configMapping update name must be non-empty".into(),
+                        });
+                    }
+                    params["name"] = serde_json::json!(value);
+                }
+                if let Some(value) = mappings {
+                    params["mappings"] = value;
+                }
+                Ok((ConfigMappingMode::Update, params))
+            }
+            ConfigMappingRequest::Delete { uuid } => {
+                if uuid.trim().is_empty() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping delete requires non-empty uuid".into(),
+                    });
+                }
+                params["uuid"] = serde_json::json!(uuid);
+                Ok((ConfigMappingMode::Delete, params))
+            }
+        }
     }
 
     fn update_headset_custom_info_params(
@@ -698,9 +818,12 @@ impl CortexClient {
     // ─── Headset Management ─────────────────────────────────────────────
 
     /// Query available headsets.
-    pub async fn query_headsets(&self) -> CortexResult<Vec<HeadsetInfo>> {
+    pub async fn query_headsets(
+        &self,
+        options: QueryHeadsetsOptions,
+    ) -> CortexResult<Vec<HeadsetInfo>> {
         let result = self
-            .call(Methods::QUERY_HEADSETS, serde_json::json!({}))
+            .call(Methods::QUERY_HEADSETS, Self::query_headsets_params(options))
             .await?;
 
         let headsets: Vec<HeadsetInfo> =
@@ -760,53 +883,80 @@ impl CortexClient {
     /// Synchronize the system clock with the headset clock.
     ///
     /// Cortex method: `syncWithHeadsetClock`
-    /// Required state: authenticated token, reachable headset.
-    /// Parameters: `cortex_token` and `headset_id`.
-    /// Returns: raw JSON-RPC result payload from Cortex.
-    /// Errors: authentication/session/headset errors from Cortex are propagated.
+    /// Required state: reachable headset.
+    /// Parameters: `headset_id`.
+    /// Returns: typed clock sync details from Cortex.
+    /// Errors: session/headset/transport errors from Cortex are propagated.
     /// Related methods: [`Self::query_headsets`], [`Self::connect_headset`].
-    pub async fn sync_with_headset_clock(
-        &self,
-        cortex_token: &str,
-        headset_id: &str,
-    ) -> CortexResult<serde_json::Value> {
-        self.call(
-            Methods::SYNC_WITH_HEADSET_CLOCK,
-            Self::sync_with_headset_clock_params(cortex_token, headset_id),
-        )
-        .await
+    pub async fn sync_with_headset_clock(&self, headset_id: &str) -> CortexResult<HeadsetClockSyncResult> {
+        let result = self
+            .call(
+                Methods::SYNC_WITH_HEADSET_CLOCK,
+                self.sync_with_headset_clock_params(headset_id)?,
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse headset clock sync result: {}", e),
+        })
     }
 
     /// Manage EEG channel mapping configurations for an EPOC Flex headset.
-    ///
-    /// The `status` parameter controls the operation: `"create"`, `"get"`, `"read"`,
-    /// `"update"`, or `"delete"`. Additional parameters depend on the operation.
     pub async fn config_mapping(
         &self,
         cortex_token: &str,
-        headset_id: &str,
-        status: &str,
-        mapping_name: Option<&str>,
-        mapping_uuid: Option<&str>,
-        mappings: Option<&serde_json::Value>,
-    ) -> CortexResult<serde_json::Value> {
-        let mut params = serde_json::json!({
-            "cortexToken": cortex_token,
-            "headset": headset_id,
-            "status": status,
-        });
+        request: ConfigMappingRequest,
+    ) -> CortexResult<ConfigMappingResponse> {
+        let (mode, params) = Self::config_mapping_params(cortex_token, request)?;
+        let result = self.call(Methods::CONFIG_MAPPING, params).await?;
 
-        if let Some(name) = mapping_name {
-            params["name"] = serde_json::json!(name);
+        match mode {
+            ConfigMappingMode::Create | ConfigMappingMode::Read | ConfigMappingMode::Update => {
+                #[derive(serde::Deserialize)]
+                struct ValueEnvelope {
+                    message: String,
+                    value: ConfigMappingValue,
+                }
+                let parsed: ValueEnvelope =
+                    serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                        reason: format!("Failed to parse configMapping value response: {}", e),
+                    })?;
+                Ok(ConfigMappingResponse::Value {
+                    message: parsed.message,
+                    value: parsed.value,
+                })
+            }
+            ConfigMappingMode::Get => {
+                #[derive(serde::Deserialize)]
+                struct ListEnvelope {
+                    message: String,
+                    value: ConfigMappingListValue,
+                }
+                let parsed: ListEnvelope =
+                    serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                        reason: format!("Failed to parse configMapping get response: {}", e),
+                    })?;
+                Ok(ConfigMappingResponse::List {
+                    message: parsed.message,
+                    value: parsed.value,
+                })
+            }
+            ConfigMappingMode::Delete => {
+                #[derive(serde::Deserialize)]
+                struct DeleteEnvelope {
+                    message: String,
+                    uuid: String,
+                }
+                let parsed: DeleteEnvelope =
+                    serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                        reason: format!("Failed to parse configMapping delete response: {}", e),
+                    })?;
+                Ok(ConfigMappingResponse::Deleted {
+                    message: parsed.message,
+                    uuid: parsed.uuid,
+                })
+            }
         }
-        if let Some(uuid) = mapping_uuid {
-            params["uuid"] = serde_json::json!(uuid);
-        }
-        if let Some(m) = mappings {
-            params["mappings"] = m.clone();
-        }
-
-        self.call(Methods::CONFIG_MAPPING, params).await
     }
 
     /// Update settings of an EPOC+ or EPOC X headset.
@@ -1473,13 +1623,11 @@ impl CortexClient {
 
     /// Get the profile currently loaded for a headset.
     ///
-    /// Returns `Ok(None)` when Cortex reports no active profile, including
-    /// `null` responses and payloads where `name` is `null`.
     pub async fn get_current_profile(
         &self,
         cortex_token: &str,
         headset_id: &str,
-    ) -> CortexResult<Option<ProfileInfo>> {
+    ) -> CortexResult<CurrentProfileInfo> {
         let result = self
             .call(
                 Methods::GET_CURRENT_PROFILE,
@@ -1490,16 +1638,12 @@ impl CortexClient {
             )
             .await?;
 
-        if result.is_null() || result.get("name").is_some_and(|v| v.is_null()) {
-            return Ok(None);
-        }
-
-        let profile: ProfileInfo =
+        let profile: CurrentProfileInfo =
             serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-                reason: format!("Failed to parse profile info: {}", e),
+                reason: format!("Failed to parse current profile info: {}", e),
             })?;
 
-        Ok(Some(profile))
+        Ok(profile)
     }
 
     /// Manage a profile (create, load, unload, save, rename, delete).
@@ -1873,11 +2017,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sync_with_headset_clock_params_include_both_headset_keys() {
-        let params = CortexClient::sync_with_headset_clock_params("token", "HS-123");
-        assert_eq!(params["cortexToken"], "token");
+    fn test_query_headsets_params_default_is_empty() {
+        let params = CortexClient::query_headsets_params(QueryHeadsetsOptions::default());
+        assert_eq!(params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_query_headsets_params_with_id() {
+        let params = CortexClient::query_headsets_params(QueryHeadsetsOptions {
+            id: Some("HS-123".into()),
+            include_flex_mappings: false,
+        });
+        assert_eq!(params["id"], "HS-123");
+        assert!(params.get("includeFlexMappings").is_none());
+    }
+
+    #[test]
+    fn test_query_headsets_params_with_include_flex_mappings() {
+        let params = CortexClient::query_headsets_params(QueryHeadsetsOptions {
+            id: None,
+            include_flex_mappings: true,
+        });
+        assert_eq!(params["includeFlexMappings"], true);
+        assert!(params.get("id").is_none());
+    }
+
+    #[test]
+    fn test_query_headsets_params_with_both_options() {
+        let params = CortexClient::query_headsets_params(QueryHeadsetsOptions {
+            id: Some("HS-123".into()),
+            include_flex_mappings: true,
+        });
+        assert_eq!(params["id"], "HS-123");
+        assert_eq!(params["includeFlexMappings"], true);
+    }
+
+    #[test]
+    fn test_sync_with_headset_clock_params_use_docs_shape() {
+        let params = CortexClient::sync_with_headset_clock_params_with_times("HS-123", 12.34, 5678);
         assert_eq!(params["headset"], "HS-123");
-        assert_eq!(params["headsetId"], "HS-123");
+        assert_eq!(params["monotonicTime"], 12.34);
+        assert_eq!(params["systemTime"], 5678);
+        assert!(params.get("cortexToken").is_none());
+        assert!(params.get("headsetId").is_none());
     }
 
     #[test]
@@ -1892,6 +2074,76 @@ mod tests {
         assert_eq!(params["headset"], "HS-123");
         assert_eq!(params["headbandPosition"], "front");
         assert_eq!(params["customName"], "My Headset");
+    }
+
+    #[test]
+    fn test_config_mapping_create_params_validation() {
+        let invalid = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Create {
+                name: "cfg".into(),
+                mappings: serde_json::json!(["not-an-object"]),
+            },
+        );
+        assert!(matches!(invalid, Err(CortexError::ProtocolError { .. })));
+
+        let valid = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Create {
+                name: "cfg".into(),
+                mappings: serde_json::json!({"CMS":"TP9"}),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(valid.0, ConfigMappingMode::Create));
+        assert_eq!(valid.1["status"], "create");
+        assert_eq!(valid.1["name"], "cfg");
+    }
+
+    #[test]
+    fn test_config_mapping_read_and_delete_require_uuid() {
+        let read = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Read {
+                uuid: String::new(),
+            },
+        );
+        assert!(matches!(read, Err(CortexError::ProtocolError { .. })));
+
+        let delete = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Delete {
+                uuid: String::new(),
+            },
+        );
+        assert!(matches!(delete, Err(CortexError::ProtocolError { .. })));
+    }
+
+    #[test]
+    fn test_config_mapping_update_requires_name_or_mappings() {
+        let missing = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "uuid-1".into(),
+                name: None,
+                mappings: None,
+            },
+        );
+        assert!(matches!(missing, Err(CortexError::ProtocolError { .. })));
+
+        let valid = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "uuid-1".into(),
+                name: Some("new".into()),
+                mappings: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(valid.0, ConfigMappingMode::Update));
+        assert_eq!(valid.1["uuid"], "uuid-1");
+        assert_eq!(valid.1["name"], "new");
     }
 
     #[test]

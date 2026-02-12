@@ -19,11 +19,11 @@ Status legend:
 | `getUserInformation` | <https://emotiv.gitbook.io/cortex-api/authentication/getuserinformation> | `CortexClient::get_user_info`, `ResilientClient::get_user_info` | `match` | Raw JSON passthrough. |
 | `getLicenseInfo` | <https://emotiv.gitbook.io/cortex-api/authentication/getlicenseinfo> | `CortexClient::get_license_info`, `ResilientClient::get_license_info` | `match` | Raw JSON passthrough. |
 | `controlDevice` | <https://emotiv.gitbook.io/cortex-api/headset/controldevice> | `connect_headset`, `disconnect_headset`, `refresh_headsets` (+ resilient wrappers) | `match` | Uses documented `command` values. |
-| `configMapping` | <https://emotiv.gitbook.io/cortex-api/headset/configmapping> | `config_mapping` (+ resilient wrapper) | `partial` | Needs broader mode-by-mode payload validation. |
-| `queryHeadsets` | <https://emotiv.gitbook.io/cortex-api/headset/queryheadsets> | `query_headsets` (+ resilient wrapper) | `partial` | Compatible; additional optional fields continue to evolve. |
+| `configMapping` | <https://emotiv.gitbook.io/cortex-api/headset/configmapping> | `config_mapping` (+ resilient wrapper) | `match` | Typed request/response covers `create/get/read/update/delete` mode contracts. |
+| `queryHeadsets` | <https://emotiv.gitbook.io/cortex-api/headset/queryheadsets> | `query_headsets` (+ resilient wrapper) | `match` | Supports docs options (`id`, `includeFlexMappings`) and expanded headset fields. |
 | `updateHeadset` | <https://emotiv.gitbook.io/cortex-api/headset/updateheadset> | `update_headset` (+ resilient wrapper) | `match` | Uses `headset` and `setting`. |
 | `updateHeadsetCustomInfo` | <https://emotiv.gitbook.io/cortex-api/headset/updateheadsetcustominfo> | `update_headset_custom_info` (+ resilient wrapper) | `match` | Uses `headsetId` per docs; retains compatibility field. |
-| `syncWithHeadsetClock` | <https://emotiv.gitbook.io/cortex-api/headset/syncwithheadsetclock> | `sync_with_headset_clock` (+ resilient wrapper) | `partial` | Endpoint available; payload compatibility retained for deployed variants. |
+| `syncWithHeadsetClock` | <https://emotiv.gitbook.io/cortex-api/headset/syncwithheadsetclock> | `sync_with_headset_clock` (+ resilient wrapper) | `match` | Uses docs payload (`headset`, `monotonicTime`, `systemTime`) and typed result parsing. |
 | `createSession` | <https://emotiv.gitbook.io/cortex-api/session/createsession> | `create_session` (+ resilient wrapper) | `match` | Uses `status: "active"`. |
 | `updateSession` | <https://emotiv.gitbook.io/cortex-api/session/updatesession> | `close_session` (+ resilient wrapper) | `match` | Close now propagates API errors. |
 | `querySessions` | <https://emotiv.gitbook.io/cortex-api/session/querysessions> | `query_sessions` (+ resilient wrapper) | `match` | Typed deserialization in `SessionInfo`. |
@@ -45,8 +45,8 @@ Status legend:
 | `deleteSubjects` | <https://emotiv.gitbook.io/cortex-api/subjects/deletesubjects> | `delete_subjects` (+ resilient wrapper) | `match` | Raw JSON passthrough. |
 | `querySubjects` | <https://emotiv.gitbook.io/cortex-api/subjects/querysubjects> | `query_subjects` (+ resilient wrapper) | `match` | Returns `(subjects, count)`. |
 | `getDemographicAttributes` | <https://emotiv.gitbook.io/cortex-api/subjects/getdemographicattributes> | `get_demographic_attributes` (+ resilient wrapper) | `match` | Typed `DemographicAttribute`. |
-| `queryProfile` | <https://emotiv.gitbook.io/cortex-api/profiles/queryprofile> | `query_profiles` (+ resilient wrapper) | `partial` | Response model now accepts current optional fields. |
-| `getCurrentProfile` | <https://emotiv.gitbook.io/cortex-api/profiles/getcurrentprofile> | `get_current_profile` (+ resilient wrapper) | `partial` | Handles null/empty profile states compatibly. |
+| `queryProfile` | <https://emotiv.gitbook.io/cortex-api/profiles/queryprofile> | `query_profiles` (+ resilient wrapper) | `match` | `ProfileInfo` now strictly matches documented query response fields. |
+| `getCurrentProfile` | <https://emotiv.gitbook.io/cortex-api/profiles/getcurrentprofile> | `get_current_profile` (+ resilient wrapper) | `match` | Uses dedicated `CurrentProfileInfo` model with nullable `name` support. |
 | `setupProfile` | <https://emotiv.gitbook.io/cortex-api/profiles/setupprofile> | `setup_profile` (+ resilient wrapper) | `match` | `ProfileAction` maps to status string. |
 | `loadGuestProfile` | <https://emotiv.gitbook.io/cortex-api/profiles/loadguestprofile> | `load_guest_profile` (+ resilient wrapper) | `match` | Token-managed wrapper available. |
 | `training` | <https://emotiv.gitbook.io/cortex-api/bci/training> | `training` (+ resilient wrapper) | `match` | `DetectionType` and `TrainingStatus` mapped. |
@@ -62,5 +62,4 @@ Status legend:
 
 ## Release criterion
 
-No rows are currently marked `mismatch`.  
-Rows marked `partial` are intentionally compatible but require continued API-doc drift checks during release validation.
+No rows are currently marked `mismatch`.

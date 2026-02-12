@@ -9,6 +9,7 @@
 //!
 //! ```no_run
 //! use emotiv_cortex_v2::{CortexClient, CortexConfig};
+//! use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
 //!
 //! #[tokio::main]
 //! async fn main() -> emotiv_cortex_v2::CortexResult<()> {
@@ -26,7 +27,7 @@
 //!     let _token = client.authenticate(&config.client_id, &config.client_secret).await?;
 //!
 //!     // Discover headsets
-//!     let headsets = client.query_headsets().await?;
+//!     let headsets = client.query_headsets(QueryHeadsetsOptions::default()).await?;
 //!     for h in &headsets {
 //!         println!("Found: {} ({})", h.id, h.status);
 //!     }

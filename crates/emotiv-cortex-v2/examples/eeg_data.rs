@@ -7,6 +7,7 @@
 use futures::StreamExt;
 
 use emotiv_cortex_v2::headset::HeadsetModel;
+use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
 use emotiv_cortex_v2::{streams, CortexClient, CortexConfig};
 
 #[tokio::main]
@@ -20,7 +21,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Find and connect to the first headset
-    let headsets = client.query_headsets().await?;
+    let headsets = client
+        .query_headsets(QueryHeadsetsOptions::default())
+        .await?;
     let headset = headsets.first().ok_or("No headset found")?;
     let model = HeadsetModel::from_headset_info(headset);
     println!("Using headset: {} ({})", headset.id, model);
