@@ -1,0 +1,36 @@
+name: Publish Dry Run
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  dry-run:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Dry run emotiv-cortex-v2
+        run: cargo publish --dry-run -p emotiv-cortex-v2
+
+      - name: Dry run emotiv-cortex-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-v2/Cargo.toml | head -n1)
+          if cargo search emotiv-cortex-v2 --limit 1 | grep -q "emotiv-cortex-v2 = \"$VERSION\""; then
+            cargo publish --dry-run -p emotiv-cortex-cli
+          else
+            echo "Skipping CLI dry-run: emotiv-cortex-v2 $VERSION is not yet visible on crates.io."
+          fi
+

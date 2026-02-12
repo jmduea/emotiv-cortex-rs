@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "crates/emotiv-cortex-v2",
+    "crates/emotiv-cortex-cli",
+]

@@ -1,0 +1,61 @@
+# Emotiv Cortex v2 Client Configuration
+#
+# Copy this file to one of:
+#   ./cortex.toml                                 (project-local)
+#   ~/.config/emotiv-cortex/cortex.toml           (Linux/macOS)
+#   %APPDATA%\emotiv-cortex\cortex.toml           (Windows)
+#
+# Or set the CORTEX_CONFIG environment variable to point to it.
+#
+# Individual values can be overridden with environment variables:
+#   EMOTIV_CLIENT_ID, EMOTIV_CLIENT_SECRET, EMOTIV_CORTEX_URL, EMOTIV_LICENSE
+
+# Required: Obtain from https://www.emotiv.com/developer/
+client_id = "your-client-id"
+client_secret = "your-client-secret"
+
+# WebSocket URL for the Cortex service (default: wss://localhost:6868)
+# cortex_url = "wss://localhost:6868"
+
+# Emotiv license key for commercial/premium features (optional)
+# license = "ABCD-1234-EFGH-5678"
+
+# Request decontaminated (motion artifact removed) EEG data (default: true)
+# decontaminated = true
+
+# Allow insecure TLS to non-localhost hosts (default: false)
+# Only needed for special setups (e.g., remote Cortex relay)
+# allow_insecure_tls = false
+
+[timeouts]
+# Timeout for JSON-RPC calls in seconds (default: 10)
+# rpc_timeout_secs = 10
+
+# Timeout for stream subscribe operations in seconds (default: 15)
+# subscribe_timeout_secs = 15
+
+# Timeout for headset connection in seconds (default: 30)
+# headset_connect_timeout_secs = 30
+
+[reconnect]
+# Enable auto-reconnect on connection loss (default: true)
+# enabled = true
+
+# Initial delay before first reconnect attempt in seconds (default: 1)
+# base_delay_secs = 1
+
+# Maximum delay between reconnect attempts in seconds (default: 60)
+# max_delay_secs = 60
+
+# Maximum reconnect attempts, 0 = unlimited (default: 0)
+# max_attempts = 0
+
+[health]
+# Enable periodic health monitoring via getCortexInfo (default: true)
+# enabled = true
+
+# Interval between health checks in seconds (default: 30)
+# interval_secs = 30
+
+# Consecutive failures before triggering reconnect (default: 3)
+# max_consecutive_failures = 3

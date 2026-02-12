@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validate tag and crate versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          V2_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-v2/Cargo.toml | head -n1)
+          CLI_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-cli/Cargo.toml | head -n1)
+
+          if [[ -z "$V2_VERSION" || -z "$CLI_VERSION" ]]; then
+            echo "Could not parse crate versions."
+            exit 1
+          fi
+
+          if [[ "$TAG_VERSION" != "$V2_VERSION" || "$TAG_VERSION" != "$CLI_VERSION" ]]; then
+            echo "Tag version ($TAG_VERSION) must match both crate versions (v2=$V2_VERSION, cli=$CLI_VERSION)."
+            exit 1
+          fi
+
+      - name: Publish emotiv-cortex-v2
+        run: cargo publish -p emotiv-cortex-v2
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for crates.io index propagation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VERSION="${GITHUB_REF_NAME#v}"
+          for attempt in {1..20}; do
+            if cargo search emotiv-cortex-v2 --limit 1 | grep -q "emotiv-cortex-v2 = \"$VERSION\""; then
+              echo "emotiv-cortex-v2 $VERSION is visible on crates.io"
+              exit 0
+            fi
+            echo "Waiting for emotiv-cortex-v2 $VERSION to appear on crates.io (attempt $attempt/20)..."
+            sleep 15
+          done
+
+          echo "Timed out waiting for crates.io index propagation."
+          exit 1
+
+      - name: Publish emotiv-cortex-cli
+        run: cargo publish -p emotiv-cortex-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+

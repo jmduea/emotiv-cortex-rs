@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cargo check workspace
+        run: cargo check --workspace
+      - name: Test emotiv-cortex-v2
+        run: cargo test -p emotiv-cortex-v2
+      - name: Check CLI (no default features)
+        run: cargo check -p emotiv-cortex-cli --no-default-features
+
+  lsl-linux:
+    name: Check CLI LSL (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install LSL
+        run: sudo apt-get update && sudo apt-get install -y liblsl-dev
+      - name: Check CLI (LSL feature)
+        run: cargo check -p emotiv-cortex-cli --features lsl
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Package emotiv-cortex-v2
+        run: cargo package -p emotiv-cortex-v2 --allow-dirty
+      - name: Package emotiv-cortex-cli (manifest/list check)
+        run: cargo package -p emotiv-cortex-cli --allow-dirty --list
