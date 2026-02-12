@@ -119,7 +119,10 @@ pub struct HeadsetInfo {
     pub settings: Option<serde_json::Value>,
 
     /// Mapping of EEG channels to headset sensor locations (EPOC Flex).
-    #[serde(rename = "flexMapping")]
+    ///
+    /// The Cortex docs and payloads have used both `flexMappings` and
+    /// `flexMapping` over time; we accept either for compatibility.
+    #[serde(rename = "flexMappings", alias = "flexMapping")]
     pub flex_mapping: Option<serde_json::Value>,
 
     /// Headband position (EPOC X).
@@ -710,6 +713,21 @@ pub struct ProfileInfo {
     /// Profile name.
     pub name: String,
 
+    /// Profile UUID, when included by the API.
+    pub uuid: Option<String>,
+
+    /// Whether the profile is read-only.
+    #[serde(rename = "readOnly")]
+    pub read_only: Option<bool>,
+
+    /// EEG channel list associated with this profile.
+    #[serde(rename = "eegChannels")]
+    pub eeg_channels: Option<Vec<String>>,
+
+    /// Whether the profile is loaded by this application.
+    #[serde(rename = "loadedByThisApp")]
+    pub loaded_by_this_app: Option<bool>,
+
     /// Headset ID this profile is currently loaded for, if any.
     #[serde(rename = "loadedByHeadset")]
     pub loaded_by_headset: Option<String>,
@@ -949,7 +967,7 @@ impl Methods {
     /// Update settings of an EPOC+ or EPOC X headset.
     pub const UPDATE_HEADSET: &'static str = "updateHeadset";
 
-    /// Updatet headband position of an EPOC X headset.
+    /// Update headband position or custom info of an EPOC X headset.
     pub const UPDATE_HEADSET_CUSTOM_INFO: &'static str = "updateHeadsetCustomInfo";
 
     /// Synchronize system time with headset clock.
@@ -1086,23 +1104,47 @@ impl ErrorCodes {
     /// No headset connected.
     pub const NO_HEADSET_CONNECTED: i32 = -32001;
 
-    /// Access denied (not authorized).
-    pub const ACCESS_DENIED: i32 = -32002;
+    /// Invalid license ID.
+    pub const INVALID_LICENSE_ID: i32 = -32002;
 
-    /// License expired or invalid.
-    pub const LICENSE_EXPIRED: i32 = -32005;
+    /// Headset unavailable.
+    pub const HEADSET_UNAVAILABLE: i32 = -32004;
 
-    /// Headset is being used by another session.
-    pub const HEADSET_IN_USE: i32 = -32012;
+    /// Session already exists.
+    pub const SESSION_ALREADY_EXISTS: i32 = -32005;
+
+    /// Session must be activated before this operation.
+    pub const SESSION_MUST_BE_ACTIVATED: i32 = -32012;
+
+    /// Invalid cortex token.
+    pub const INVALID_CORTEX_TOKEN: i32 = -32014;
+
+    /// Cortex token expired.
+    pub const TOKEN_EXPIRED: i32 = -32015;
+
+    /// Invalid stream for subscribe/unsubscribe.
+    pub const INVALID_STREAM: i32 = -32016;
+
+    /// Invalid client credentials.
+    pub const INVALID_CLIENT_CREDENTIALS: i32 = -32021;
+
+    /// License expired or unavailable.
+    pub const LICENSE_EXPIRED: i32 = -32024;
 
     /// User not logged in to EmotivID in the Launcher.
     pub const USER_NOT_LOGGED_IN: i32 = -32033;
 
-    /// Not approved in EMOTIV Launcher.
-    pub const NOT_APPROVED: i32 = -32102;
+    /// Application is unpublished/unapproved for this account.
+    pub const UNPUBLISHED_APPLICATION: i32 = -32142;
 
-    /// Cortex service is still starting up.
-    pub const CORTEX_STARTING: i32 = -32122;
+    /// Headset not ready yet.
+    pub const HEADSET_NOT_READY: i32 = -32152;
+
+    // Backward-compatible aliases for older naming.
+    pub const ACCESS_DENIED: i32 = Self::INVALID_LICENSE_ID;
+    pub const HEADSET_IN_USE: i32 = Self::SESSION_MUST_BE_ACTIVATED;
+    pub const NOT_APPROVED: i32 = Self::UNPUBLISHED_APPLICATION;
+    pub const CORTEX_STARTING: i32 = Self::HEADSET_NOT_READY;
 }
 
 // ─── Stream Names ───────────────────────────────────────────────────────
@@ -1164,6 +1206,26 @@ mod tests {
         assert_eq!(info.id, "INSIGHT-A1B2C3D4");
         assert_eq!(info.status, "connected");
         assert_eq!(info.sensors.as_ref().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_deserialize_headset_info_flex_mappings_aliases() {
+        let new_json = r#"{
+            "id": "EPOCFLEX-ABCD1234",
+            "status": "connected",
+            "flexMappings": {"AF3":"C1"}
+        }"#;
+        let old_json = r#"{
+            "id": "EPOCFLEX-ABCD1234",
+            "status": "connected",
+            "flexMapping": {"AF3":"C1"}
+        }"#;
+
+        let new_info: HeadsetInfo = serde_json::from_str(new_json).unwrap();
+        let old_info: HeadsetInfo = serde_json::from_str(old_json).unwrap();
+
+        assert!(new_info.flex_mapping.is_some());
+        assert!(old_info.flex_mapping.is_some());
     }
 
     #[test]
@@ -1446,6 +1508,26 @@ mod tests {
             profile.loaded_by_headset.as_deref(),
             Some("INSIGHT-A1B2C3D4")
         );
+    }
+
+    #[test]
+    fn test_deserialize_profile_info_extended_fields() {
+        let json = r#"{
+            "name": "my_profile",
+            "uuid": "profile-uuid-123",
+            "readOnly": false,
+            "eegChannels": ["AF3", "AF4"],
+            "loadedByThisApp": true
+        }"#;
+
+        let profile: ProfileInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(profile.uuid.as_deref(), Some("profile-uuid-123"));
+        assert_eq!(profile.read_only, Some(false));
+        assert_eq!(
+            profile.eeg_channels,
+            Some(vec!["AF3".to_string(), "AF4".to_string()])
+        );
+        assert_eq!(profile.loaded_by_this_app, Some(true));
     }
 
     #[test]

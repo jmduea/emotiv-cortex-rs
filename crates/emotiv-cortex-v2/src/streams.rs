@@ -16,11 +16,16 @@
 //! 2. Sends the `subscribe` RPC call
 //! 3. Returns a typed `Stream` that yields parsed data
 //!
-//! ```ignore
+//! ```no_run
 //! use emotiv_cortex_v2::streams;
+//! use emotiv_cortex_v2::CortexClient;
 //!
-//! let eeg = streams::subscribe_eeg(&client, &token, &session_id, 5).await?;
-//! let mot = streams::subscribe_motion(&client, &token, &session_id).await?;
+//! # async fn demo(client: &CortexClient, token: &str, session_id: &str) -> emotiv_cortex_v2::CortexResult<()> {
+//! let eeg = streams::subscribe_eeg(client, token, session_id, 5).await?;
+//! let mot = streams::subscribe_motion(client, token, session_id).await?;
+//! let _ = (eeg, mot);
+//! # Ok(())
+//! # }
 //! ```
 
 use std::pin::Pin;
@@ -44,11 +49,26 @@ use crate::protocol::{
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```rust
 /// use emotiv_cortex_v2::streams::TypedStream;
+/// use futures::StreamExt;
+/// use tokio::sync::mpsc;
 ///
-/// let stream = TypedStream::new(rx, |event| {
-///     serde_json::from_value::<MyType>(event).ok()
+/// let rt = tokio::runtime::Builder::new_current_thread()
+///     .enable_time()
+///     .build()
+///     .unwrap();
+///
+/// rt.block_on(async {
+///     let (tx, rx) = mpsc::channel(4);
+///     let mut stream = TypedStream::new(rx, |event| {
+///         event.get("value")?.as_i64().map(|v| v as i32)
+///     });
+///
+///     tx.send(serde_json::json!({"value": 7})).await.unwrap();
+///     drop(tx);
+///
+///     assert_eq!(stream.next().await, Some(7));
 /// });
 /// ```
 pub struct TypedStream<T, F>

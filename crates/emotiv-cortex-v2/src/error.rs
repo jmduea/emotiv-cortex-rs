@@ -18,7 +18,6 @@ pub type CortexResult<T> = std::result::Result<T, CortexError>;
 #[derive(Error, Debug)]
 pub enum CortexError {
     // ─── Connection ─────────────────────────────────────────────────
-
     /// Failed to establish a WebSocket connection to the Cortex service.
     #[error("Failed to connect to Cortex at {url}: {reason}. Is the EMOTIV Launcher running?")]
     ConnectionFailed { url: String, reason: String },
@@ -32,7 +31,6 @@ pub enum CortexError {
     NotConnected,
 
     // ─── Authentication ─────────────────────────────────────────────
-
     /// Authentication failed (invalid client_id/client_secret or expired token).
     #[error("Authentication failed: {reason}. Check your client_id and client_secret from the Emotiv Developer Portal.")]
     AuthenticationFailed { reason: String },
@@ -54,13 +52,11 @@ pub enum CortexError {
     NotApproved,
 
     // ─── License ────────────────────────────────────────────────────
-
     /// License expired, invalid, or missing for the requested operation.
     #[error("Emotiv license error: {reason}")]
     LicenseError { reason: String },
 
     // ─── Headset ────────────────────────────────────────────────────
-
     /// No headset found (either not paired or not powered on).
     #[error("No headset found. Ensure the headset is powered on and within range.")]
     NoHeadsetFound,
@@ -74,19 +70,16 @@ pub enum CortexError {
     HeadsetError { reason: String },
 
     // ─── Session ────────────────────────────────────────────────────
-
     /// Session-related error (create, update, close failed).
     #[error("Session error: {reason}")]
     SessionError { reason: String },
 
     // ─── Streams ────────────────────────────────────────────────────
-
     /// Subscribe/unsubscribe failed for the requested streams.
     #[error("Stream error: {reason}")]
     StreamError { reason: String },
 
     // ─── API ────────────────────────────────────────────────────────
-
     /// Raw Cortex API error that doesn't map to a more specific variant.
     #[error("Cortex API error {code}: {message}")]
     ApiError { code: i32, message: String },
@@ -100,13 +93,11 @@ pub enum CortexError {
     MethodNotFound { method: String },
 
     // ─── Timeout ────────────────────────────────────────────────────
-
     /// An operation timed out waiting for a response.
     #[error("Operation timed out after {seconds}s")]
     Timeout { seconds: u64 },
 
     // ─── Retry ──────────────────────────────────────────────────────
-
     /// All retry attempts have been exhausted.
     #[error("Operation failed after {attempts} attempts: {last_error}")]
     RetriesExhausted {
@@ -115,19 +106,16 @@ pub enum CortexError {
     },
 
     // ─── Protocol ───────────────────────────────────────────────────
-
     /// Received an unexpected or malformed message from the Cortex service.
     #[error("Protocol error: {reason}")]
     ProtocolError { reason: String },
 
     // ─── Config ─────────────────────────────────────────────────────
-
     /// Configuration file error (missing, malformed, or invalid values).
     #[error("Configuration error: {reason}")]
     ConfigError { reason: String },
 
     // ─── WebSocket ──────────────────────────────────────────────────
-
     /// Low-level WebSocket transport error.
     #[error("WebSocket error: {0}")]
     WebSocket(String),
@@ -137,7 +125,6 @@ pub enum CortexError {
     Tls(String),
 
     // ─── I/O ────────────────────────────────────────────────────────
-
     /// Filesystem or I/O error (config file reading, etc.).
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -150,15 +137,24 @@ pub enum CortexError {
 impl CortexError {
     /// Map a Cortex API error code + message to the most specific error variant.
     ///
-    /// Known error codes from the Cortex v2 API:
+    /// Known error codes from the Cortex v2 API docs (2026-02-12):
     /// - `-32601`: Method not found
     /// - `-32001`: No headset connected
-    /// - `-32002`: Access denied
-    /// - `-32005`: License expired
-    /// - `-32012`: Headset in use
+    /// - `-32002`: Invalid license ID
+    /// - `-32004`: Headset unavailable
+    /// - `-32005`: Session already exists
+    /// - `-32012`: Session must be activated
+    /// - `-32014`: Invalid cortex token
+    /// - `-32015`: Cortex token expired
+    /// - `-32016`: Invalid stream
+    /// - `-32021`: Invalid client credentials
+    /// - `-32024`: License expired
     /// - `-32033`: User not logged in
-    /// - `-32102`: Not approved in Launcher
-    /// - `-32122`: Cortex still starting
+    /// - `-32142`: Unpublished/unapproved application
+    /// - `-32152`: Headset not ready
+    ///
+    /// Legacy Cortex deployments may also return older codes such as
+    /// `-32102` and `-32122`.
     pub fn from_api_error(code: i32, message: impl Into<String>) -> Self {
         let message = message.into();
         match code {
@@ -166,10 +162,19 @@ impl CortexError {
                 method: message.clone(),
             },
             -32001 => CortexError::NoHeadsetFound,
-            -32002 => CortexError::AccessDenied { reason: message },
-            -32005 => CortexError::LicenseError { reason: message },
-            -32012 => CortexError::HeadsetInUse,
+            -32002 => CortexError::LicenseError { reason: message },
+            -32004 => CortexError::NoHeadsetFound,
+            -32005 => CortexError::SessionError { reason: message },
+            -32012 => CortexError::SessionError { reason: message },
+            -32014 => CortexError::AuthenticationFailed { reason: message },
+            -32015 => CortexError::TokenExpired,
+            -32016 => CortexError::StreamError { reason: message },
+            -32021 => CortexError::AuthenticationFailed { reason: message },
+            -32024 => CortexError::LicenseError { reason: message },
             -32033 => CortexError::UserNotLoggedIn,
+            -32142 => CortexError::NotApproved,
+            -32152 => CortexError::HeadsetError { reason: message },
+            // Legacy/older documented mappings.
             -32102 => CortexError::NotApproved,
             -32122 => CortexError::CortexStarting,
             _ => CortexError::ApiError { code, message },
@@ -233,32 +238,68 @@ mod tests {
             CortexError::NoHeadsetFound
         ));
         assert!(matches!(
-            CortexError::from_api_error(-32002, "denied"),
-            CortexError::AccessDenied { .. }
-        ));
-        assert!(matches!(
-            CortexError::from_api_error(-32005, "expired"),
+            CortexError::from_api_error(-32002, "invalid license"),
             CortexError::LicenseError { .. }
         ));
         assert!(matches!(
-            CortexError::from_api_error(-32012, "busy"),
-            CortexError::HeadsetInUse
+            CortexError::from_api_error(-32004, "headset unavailable"),
+            CortexError::NoHeadsetFound
+        ));
+        assert!(matches!(
+            CortexError::from_api_error(-32005, "session already exists"),
+            CortexError::SessionError { .. }
+        ));
+        assert!(matches!(
+            CortexError::from_api_error(-32012, "session must be activated"),
+            CortexError::SessionError { .. }
+        ));
+        assert!(matches!(
+            CortexError::from_api_error(-32014, "invalid token"),
+            CortexError::AuthenticationFailed { .. }
+        ));
+        assert!(matches!(
+            CortexError::from_api_error(-32015, "expired token"),
+            CortexError::TokenExpired
+        ));
+        assert!(matches!(
+            CortexError::from_api_error(-32016, "invalid stream"),
+            CortexError::StreamError { .. }
+        ));
+        assert!(matches!(
+            CortexError::from_api_error(-32021, "invalid credentials"),
+            CortexError::AuthenticationFailed { .. }
+        ));
+        assert!(matches!(
+            CortexError::from_api_error(-32024, "license expired"),
+            CortexError::LicenseError { .. }
         ));
         assert!(matches!(
             CortexError::from_api_error(-32033, "not logged in"),
             CortexError::UserNotLoggedIn
         ));
         assert!(matches!(
-            CortexError::from_api_error(-32102, "not approved"),
+            CortexError::from_api_error(-32142, "not approved"),
             CortexError::NotApproved
         ));
         assert!(matches!(
-            CortexError::from_api_error(-32122, "starting"),
-            CortexError::CortexStarting
+            CortexError::from_api_error(-32152, "headset not ready"),
+            CortexError::HeadsetError { .. }
         ));
         assert!(matches!(
             CortexError::from_api_error(-32601, "unknown"),
             CortexError::MethodNotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn test_from_api_error_legacy_codes() {
+        assert!(matches!(
+            CortexError::from_api_error(-32102, "legacy not approved"),
+            CortexError::NotApproved
+        ));
+        assert!(matches!(
+            CortexError::from_api_error(-32122, "legacy starting"),
+            CortexError::CortexStarting
         ));
     }
 
@@ -272,21 +313,15 @@ mod tests {
     fn test_is_retryable() {
         assert!(CortexError::CortexStarting.is_retryable());
         assert!(CortexError::Timeout { seconds: 10 }.is_retryable());
-        assert!(CortexError::ConnectionLost {
-            reason: "x".into()
-        }
-        .is_retryable());
+        assert!(CortexError::ConnectionLost { reason: "x".into() }.is_retryable());
         assert!(!CortexError::NoHeadsetFound.is_retryable());
-        assert!(!CortexError::HeadsetInUse.is_retryable());
+        assert!(!CortexError::SessionError { reason: "x".into() }.is_retryable());
     }
 
     #[test]
     fn test_is_connection_error() {
         assert!(CortexError::NotConnected.is_connection_error());
-        assert!(CortexError::ConnectionLost {
-            reason: "x".into()
-        }
-        .is_connection_error());
+        assert!(CortexError::ConnectionLost { reason: "x".into() }.is_connection_error());
         assert!(!CortexError::TokenExpired.is_connection_error());
     }
 }

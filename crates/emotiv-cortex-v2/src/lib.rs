@@ -7,7 +7,7 @@
 //!
 //! ## Quick Start
 //!
-//! ```ignore
+//! ```no_run
 //! use emotiv_cortex_v2::{CortexClient, CortexConfig};
 //!
 //! #[tokio::main]
@@ -23,7 +23,7 @@
 //!     println!("Cortex version: {:?}", info);
 //!
 //!     // Authenticate
-//!     let token = client.authenticate(&config.client_id, &config.client_secret).await?;
+//!     let _token = client.authenticate(&config.client_id, &config.client_secret).await?;
 //!
 //!     // Discover headsets
 //!     let headsets = client.query_headsets().await?;

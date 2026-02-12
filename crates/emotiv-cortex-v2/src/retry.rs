@@ -13,12 +13,32 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
+//! ```rust
 //! use emotiv_cortex_v2::retry::{RetryPolicy, with_retry};
+//! use emotiv_cortex_v2::CortexError;
+//! use std::sync::atomic::{AtomicUsize, Ordering};
 //!
-//! let headsets = with_retry(&RetryPolicy::query(), || async {
-//!     client.query_headsets().await
-//! }).await?;
+//! let attempts = AtomicUsize::new(0);
+//! let rt = tokio::runtime::Builder::new_current_thread()
+//!     .enable_time()
+//!     .build()
+//!     .unwrap();
+//!
+//! let result = rt.block_on(async {
+//!     with_retry(&RetryPolicy::query(), || {
+//!         let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+//!         async move {
+//!             if attempt == 0 {
+//!                 Err(CortexError::Timeout { seconds: 1 })
+//!             } else {
+//!                 Ok::<_, CortexError>(42)
+//!             }
+//!         }
+//!     })
+//!     .await
+//! });
+//!
+//! assert_eq!(result.unwrap(), 42);
 //! ```
 
 use std::time::Duration;

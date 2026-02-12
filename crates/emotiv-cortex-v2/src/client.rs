@@ -31,6 +31,15 @@
 //! The Emotiv Cortex service runs at `wss://localhost:6868` with a
 //! self-signed TLS certificate. We configure `native-tls` to accept
 //! this certificate for localhost connections only.
+//!
+//! ## Method Contract Template
+//!
+//! Public methods in this module document:
+//! - Cortex method name
+//! - required state (connection/auth/session)
+//! - parameter semantics
+//! - return shape and parsing behavior
+//! - error propagation and retry/idempotency notes
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -369,6 +378,77 @@ impl CortexClient {
         Ok(result)
     }
 
+    fn sync_with_headset_clock_params(cortex_token: &str, headset_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "cortexToken": cortex_token,
+            "headset": headset_id,
+            // Compatibility with docs/runtime variants that use headsetId.
+            "headsetId": headset_id,
+        })
+    }
+
+    fn update_headset_custom_info_params(
+        cortex_token: &str,
+        headset_id: &str,
+        headband_position: Option<&str>,
+        custom_name: Option<&str>,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "headsetId": headset_id,
+            // Backward-compat for older deployments.
+            "headset": headset_id,
+        });
+
+        if let Some(pos) = headband_position {
+            params["headbandPosition"] = serde_json::json!(pos);
+        }
+        if let Some(name) = custom_name {
+            params["customName"] = serde_json::json!(name);
+        }
+        params
+    }
+
+    fn mental_command_training_threshold_params(
+        cortex_token: &str,
+        session_id: Option<&str>,
+        profile: Option<&str>,
+        status: Option<&str>,
+        value: Option<f64>,
+    ) -> CortexResult<serde_json::Value> {
+        match (session_id, profile) {
+            (Some(_), Some(_)) => {
+                return Err(CortexError::ProtocolError {
+                    reason: "Specify either session_id or profile, not both".into(),
+                });
+            }
+            (None, None) => {
+                return Err(CortexError::ProtocolError {
+                    reason: "Specify either session_id or profile".into(),
+                });
+            }
+            _ => {}
+        }
+
+        let inferred_status = status.unwrap_or(if value.is_some() { "set" } else { "get" });
+
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": inferred_status,
+        });
+
+        if let Some(session) = session_id {
+            params["session"] = serde_json::json!(session);
+        }
+        if let Some(profile_name) = profile {
+            params["profile"] = serde_json::json!(profile_name);
+        }
+        if let Some(threshold) = value {
+            params["value"] = serde_json::json!(threshold);
+        }
+        Ok(params)
+    }
+
     // ─── Streaming ──────────────────────────────────────────────────────
 
     /// Stream name validation and mapping to static keys.
@@ -594,10 +674,7 @@ impl CortexClient {
     }
 
     /// Get information about the current user.
-    pub async fn get_user_info(
-        &self,
-        cortex_token: &str,
-    ) -> CortexResult<serde_json::Value> {
+    pub async fn get_user_info(&self, cortex_token: &str) -> CortexResult<serde_json::Value> {
         self.call(
             Methods::GET_USER_INFO,
             serde_json::json!({
@@ -608,10 +685,7 @@ impl CortexClient {
     }
 
     /// Get information about the license used by the application.
-    pub async fn get_license_info(
-        &self,
-        cortex_token: &str,
-    ) -> CortexResult<serde_json::Value> {
+    pub async fn get_license_info(&self, cortex_token: &str) -> CortexResult<serde_json::Value> {
         self.call(
             Methods::GET_LICENSE_INFO,
             serde_json::json!({
@@ -684,6 +758,13 @@ impl CortexClient {
     }
 
     /// Synchronize the system clock with the headset clock.
+    ///
+    /// Cortex method: `syncWithHeadsetClock`
+    /// Required state: authenticated token, reachable headset.
+    /// Parameters: `cortex_token` and `headset_id`.
+    /// Returns: raw JSON-RPC result payload from Cortex.
+    /// Errors: authentication/session/headset errors from Cortex are propagated.
+    /// Related methods: [`Self::query_headsets`], [`Self::connect_headset`].
     pub async fn sync_with_headset_clock(
         &self,
         cortex_token: &str,
@@ -691,10 +772,7 @@ impl CortexClient {
     ) -> CortexResult<serde_json::Value> {
         self.call(
             Methods::SYNC_WITH_HEADSET_CLOCK,
-            serde_json::json!({
-                "cortexToken": cortex_token,
-                "headset": headset_id,
-            }),
+            Self::sync_with_headset_clock_params(cortex_token, headset_id),
         )
         .await
     }
@@ -733,8 +811,16 @@ impl CortexClient {
 
     /// Update settings of an EPOC+ or EPOC X headset.
     ///
-    /// The `setting` value is a JSON object with device-specific keys
-    /// (e.g., `{"mode": "EPOC", "eegRate": 256, "memsRate": 64}`).
+    /// Cortex method: `updateHeadset`
+    /// Required state: authenticated token.
+    /// Parameters:
+    /// - `headset_id`: headset identifier
+    /// - `setting`: device-specific JSON object (for example:
+    ///   `{"mode": "EPOC", "eegRate": 256, "memsRate": 64}`)
+    /// Returns: raw JSON-RPC result payload from Cortex.
+    /// Errors: validation/headset/license/auth errors are propagated.
+    /// Retry/idempotency: safe to retry when the same `setting` is reused.
+    /// Related methods: [`Self::update_headset_custom_info`], [`Self::query_headsets`].
     pub async fn update_headset(
         &self,
         cortex_token: &str,
@@ -753,6 +839,16 @@ impl CortexClient {
     }
 
     /// Update the headband position or custom name of an EPOC X headset.
+    ///
+    /// Cortex method: `updateHeadsetCustomInfo`
+    /// Required state: authenticated token.
+    /// Parameters:
+    /// - `headset_id`: headset identifier
+    /// - `headband_position`: optional position string
+    /// - `custom_name`: optional display name
+    /// Returns: raw JSON-RPC result payload from Cortex.
+    /// Errors: validation/headset/auth errors are propagated.
+    /// Related methods: [`Self::update_headset`], [`Self::query_headsets`].
     pub async fn update_headset_custom_info(
         &self,
         cortex_token: &str,
@@ -760,19 +856,16 @@ impl CortexClient {
         headband_position: Option<&str>,
         custom_name: Option<&str>,
     ) -> CortexResult<serde_json::Value> {
-        let mut params = serde_json::json!({
-            "cortexToken": cortex_token,
-            "headset": headset_id,
-        });
-
-        if let Some(pos) = headband_position {
-            params["headbandPosition"] = serde_json::json!(pos);
-        }
-        if let Some(name) = custom_name {
-            params["customName"] = serde_json::json!(name);
-        }
-
-        self.call(Methods::UPDATE_HEADSET_CUSTOM_INFO, params).await
+        self.call(
+            Methods::UPDATE_HEADSET_CUSTOM_INFO,
+            Self::update_headset_custom_info_params(
+                cortex_token,
+                headset_id,
+                headband_position,
+                custom_name,
+            ),
+        )
+        .await
     }
 
     // ─── Session Management ─────────────────────────────────────────────
@@ -819,18 +912,24 @@ impl CortexClient {
         })
     }
 
-    /// Close a session.
+    /// Close an active session.
+    ///
+    /// Cortex method: `updateSession` with `status = "close"`.
+    /// Required state: authenticated token and a valid `session_id`.
+    /// Returns: `Ok(())` only when Cortex confirms the session update call.
+    /// Errors: session/auth/transport errors are propagated.
+    /// Retry/idempotency: generally safe to retry close on transient failures.
+    /// Related methods: [`Self::create_session`], [`Self::query_sessions`].
     pub async fn close_session(&self, cortex_token: &str, session_id: &str) -> CortexResult<()> {
-        let _ = self
-            .call(
-                Methods::UPDATE_SESSION,
-                serde_json::json!({
-                    "cortexToken": cortex_token,
-                    "session": session_id,
-                    "status": "close",
-                }),
-            )
-            .await;
+        self.call(
+            Methods::UPDATE_SESSION,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "session": session_id,
+                "status": "close",
+            }),
+        )
+        .await?;
 
         tracing::info!(session_id, "Session closed");
         Ok(())
@@ -1320,10 +1419,7 @@ impl CortexClient {
 
         let result = self.call(Methods::QUERY_SUBJECTS, params).await?;
 
-        let count = result
-            .get("count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        let count = result.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
         let subjects_value = result
             .get("subjects")
@@ -1376,6 +1472,9 @@ impl CortexClient {
     }
 
     /// Get the profile currently loaded for a headset.
+    ///
+    /// Returns `Ok(None)` when Cortex reports no active profile, including
+    /// `null` responses and payloads where `name` is `null`.
     pub async fn get_current_profile(
         &self,
         cortex_token: &str,
@@ -1391,7 +1490,7 @@ impl CortexClient {
             )
             .await?;
 
-        if result.is_null() {
+        if result.is_null() || result.get("name").is_some_and(|v| v.is_null()) {
             return Ok(None);
         }
 
@@ -1553,20 +1652,75 @@ impl CortexClient {
         .await
     }
 
-    /// Get or set the mental command training threshold.
+    /// Get the mental command training threshold for an active session.
+    ///
+    /// Cortex method: `mentalCommandTrainingThreshold`
+    /// Required state: authenticated token and active session.
+    /// Parameters: `session_id` selects the target session.
+    /// Returns: raw JSON payload from Cortex.
+    /// Related methods:
+    /// [`Self::mental_command_training_threshold_with_params`],
+    /// [`Self::mental_command_training_threshold_for_profile`].
     pub async fn mental_command_training_threshold(
         &self,
         cortex_token: &str,
         session_id: &str,
     ) -> CortexResult<serde_json::Value> {
-        self.call(
-            Methods::MENTAL_COMMAND_TRAINING_THRESHOLD,
-            serde_json::json!({
-                "cortexToken": cortex_token,
-                "session": session_id,
-            }),
+        self.mental_command_training_threshold_with_params(
+            cortex_token,
+            Some(session_id),
+            None,
+            None,
+            None,
         )
         .await
+    }
+
+    /// Get or set the mental command training threshold for a profile.
+    ///
+    /// Set `status` to `Some("set")` and provide `value` to update.
+    /// Use `status = None` (or `Some("get")`) to read the threshold.
+    pub async fn mental_command_training_threshold_for_profile(
+        &self,
+        cortex_token: &str,
+        profile: &str,
+        status: Option<&str>,
+        value: Option<f64>,
+    ) -> CortexResult<serde_json::Value> {
+        self.mental_command_training_threshold_with_params(
+            cortex_token,
+            None,
+            Some(profile),
+            status,
+            value,
+        )
+        .await
+    }
+
+    /// Get or set the mental command training threshold using either session
+    /// or profile targeting.
+    ///
+    /// Exactly one of `session_id` or `profile` must be provided.
+    /// If `status` is `None`, this infers `"get"` when `value` is `None`,
+    /// otherwise `"set"`.
+    pub async fn mental_command_training_threshold_with_params(
+        &self,
+        cortex_token: &str,
+        session_id: Option<&str>,
+        profile: Option<&str>,
+        status: Option<&str>,
+        value: Option<f64>,
+    ) -> CortexResult<serde_json::Value> {
+        let params = Self::mental_command_training_threshold_params(
+            cortex_token,
+            session_id,
+            profile,
+            status,
+            value,
+        )?;
+
+        self.call(Methods::MENTAL_COMMAND_TRAINING_THRESHOLD, params)
+            .await
     }
 
     /// Get a list of trained actions for a profile's detection type.
@@ -1711,5 +1865,75 @@ impl CortexClient {
         let _ = writer.close().await;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sync_with_headset_clock_params_include_both_headset_keys() {
+        let params = CortexClient::sync_with_headset_clock_params("token", "HS-123");
+        assert_eq!(params["cortexToken"], "token");
+        assert_eq!(params["headset"], "HS-123");
+        assert_eq!(params["headsetId"], "HS-123");
+    }
+
+    #[test]
+    fn test_update_headset_custom_info_uses_headset_id() {
+        let params = CortexClient::update_headset_custom_info_params(
+            "token",
+            "HS-123",
+            Some("front"),
+            Some("My Headset"),
+        );
+        assert_eq!(params["headsetId"], "HS-123");
+        assert_eq!(params["headset"], "HS-123");
+        assert_eq!(params["headbandPosition"], "front");
+        assert_eq!(params["customName"], "My Headset");
+    }
+
+    #[test]
+    fn test_mental_command_training_threshold_params_get_and_set_modes() {
+        let get_params = CortexClient::mental_command_training_threshold_params(
+            "token",
+            Some("session-1"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(get_params["status"], "get");
+        assert_eq!(get_params["session"], "session-1");
+        assert!(get_params.get("value").is_none());
+
+        let set_params = CortexClient::mental_command_training_threshold_params(
+            "token",
+            None,
+            Some("profile-a"),
+            Some("set"),
+            Some(0.42),
+        )
+        .unwrap();
+        assert_eq!(set_params["status"], "set");
+        assert_eq!(set_params["profile"], "profile-a");
+        assert_eq!(set_params["value"], 0.42);
+    }
+
+    #[test]
+    fn test_mental_command_training_threshold_params_validation() {
+        let both = CortexClient::mental_command_training_threshold_params(
+            "token",
+            Some("session-1"),
+            Some("profile-a"),
+            None,
+            None,
+        );
+        assert!(matches!(both, Err(CortexError::ProtocolError { .. })));
+
+        let neither =
+            CortexClient::mental_command_training_threshold_params("token", None, None, None, None);
+        assert!(matches!(neither, Err(CortexError::ProtocolError { .. })));
     }
 }

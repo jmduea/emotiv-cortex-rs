@@ -25,6 +25,18 @@ jobs:
         run: cargo check --workspace
       - name: Test emotiv-cortex-v2
         run: cargo test -p emotiv-cortex-v2
+      - name: Test emotiv-cortex-v2 docs
+        run: cargo test -p emotiv-cortex-v2 --doc
+      - name: Verify no ignored rustdoc examples in emotiv-cortex-v2 src
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -n '```ignore' crates/emotiv-cortex-v2/src; then
+            echo "Found rustdoc examples marked as ignore in crates/emotiv-cortex-v2/src."
+            exit 1
+          fi
+      - name: Build emotiv-cortex-v2 docs with warnings denied
+        run: RUSTDOCFLAGS="-D warnings" cargo doc -p emotiv-cortex-v2 --no-deps
       - name: Check CLI (no default features)
         run: cargo check -p emotiv-cortex-cli --no-default-features
 

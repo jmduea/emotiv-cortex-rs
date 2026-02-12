@@ -12,6 +12,13 @@ Provides a complete, typed interface to the Emotiv Cortex service for interactin
 - Automatic TLS handling (self-signed certs for localhost)
 - Configurable via TOML file or environment variables
 
+## Which client should I use?
+
+| Layer | Type | Token mgmt | Reconnect | Best for |
+|---|---|---|---|---|
+| Low-level | `CortexClient` | Manual | No | tooling, tests, direct protocol control |
+| High-level | `ResilientClient` | Automatic | Yes | long-running production applications |
+
 ## Prerequisites
 
 - [EMOTIV Launcher](https://www.emotiv.com/emotiv-launcher/) installed and running
@@ -25,7 +32,7 @@ emotiv-cortex-v2 = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-```rust
+```no_run
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
 #[tokio::main]
@@ -66,6 +73,9 @@ client_secret = "your-client-secret"
 ## Examples
 
 See the [`examples/`](examples/) directory for complete working examples covering all API areas.
+
+For endpoint-by-endpoint compatibility tracking against the official API reference,
+see [`docs/api-parity.md`](docs/api-parity.md).
 
 ## License
 

@@ -9,9 +9,10 @@
 //!
 //! ## Usage
 //!
-//! ```ignore
+//! ```no_run
 //! use emotiv_cortex_v2::{CortexConfig, reconnect::ResilientClient};
 //!
+//! # async fn demo() -> emotiv_cortex_v2::CortexResult<()> {
 //! let config = CortexConfig::discover(None)?;
 //! let client = ResilientClient::connect(config).await?;
 //!
@@ -26,6 +27,9 @@
 //! // Use like CortexClient, but without passing tokens
 //! let headsets = client.query_headsets().await?;
 //! let session = client.create_session(&headsets[0].id).await?;
+//! let _ = session;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Reconnection Behavior
@@ -39,6 +43,14 @@
 //!
 //! **Streams are NOT auto-re-subscribed.** Consumers must listen for
 //! `Reconnected` events and re-subscribe, since the session ID changes.
+//!
+//! ## Method Contract Template
+//!
+//! Wrapper methods in this module preserve the underlying [`CortexClient`]
+//! endpoint semantics, while adding:
+//! - token injection/refresh behavior
+//! - reconnect behavior on connection-class errors
+//! - connection event side effects
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -720,10 +732,7 @@ impl ResilientClient {
     }
 
     /// Get detailed information for specific records by their IDs.
-    pub async fn get_record_infos(
-        &self,
-        record_ids: &[String],
-    ) -> CortexResult<serde_json::Value> {
+    pub async fn get_record_infos(&self, record_ids: &[String]) -> CortexResult<serde_json::Value> {
         let ids = record_ids.to_vec();
         self.exec_with_token(move |c, token| {
             let ids = ids.clone();
@@ -747,10 +756,7 @@ impl ResilientClient {
     }
 
     /// Request to download recorded data from the Emotiv cloud.
-    pub async fn download_record(
-        &self,
-        record_ids: &[String],
-    ) -> CortexResult<serde_json::Value> {
+    pub async fn download_record(&self, record_ids: &[String]) -> CortexResult<serde_json::Value> {
         let ids = record_ids.to_vec();
         self.exec_with_token(move |c, token| {
             let ids = ids.clone();
@@ -913,7 +919,10 @@ impl ResilientClient {
         self.exec_with_token(move |c, token| {
             let query = query.clone();
             let order_by = order_by.clone();
-            async move { c.query_subjects(&token, query, order_by, limit, offset).await }
+            async move {
+                c.query_subjects(&token, query, order_by, limit, offset)
+                    .await
+            }
         })
         .await
     }
@@ -1066,6 +1075,61 @@ impl ResilientClient {
         .await
     }
 
+    /// Get or set the mental command training threshold for a profile.
+    pub async fn mental_command_training_threshold_for_profile(
+        &self,
+        profile: &str,
+        status: Option<&str>,
+        value: Option<f64>,
+    ) -> CortexResult<serde_json::Value> {
+        let profile_name = profile.to_string();
+        let st = status.map(|s| s.to_string());
+        self.exec_with_token(move |c, token| {
+            let profile_name = profile_name.clone();
+            let st = st.clone();
+            async move {
+                c.mental_command_training_threshold_for_profile(
+                    &token,
+                    &profile_name,
+                    st.as_deref(),
+                    value,
+                )
+                .await
+            }
+        })
+        .await
+    }
+
+    /// Get or set the mental command training threshold with explicit
+    /// session/profile targeting.
+    pub async fn mental_command_training_threshold_with_params(
+        &self,
+        session_id: Option<&str>,
+        profile: Option<&str>,
+        status: Option<&str>,
+        value: Option<f64>,
+    ) -> CortexResult<serde_json::Value> {
+        let sid = session_id.map(|s| s.to_string());
+        let profile_name = profile.map(|s| s.to_string());
+        let st = status.map(|s| s.to_string());
+        self.exec_with_token(move |c, token| {
+            let sid = sid.clone();
+            let profile_name = profile_name.clone();
+            let st = st.clone();
+            async move {
+                c.mental_command_training_threshold_with_params(
+                    &token,
+                    sid.as_deref(),
+                    profile_name.as_deref(),
+                    st.as_deref(),
+                    value,
+                )
+                .await
+            }
+        })
+        .await
+    }
+
     /// Get a list of trained actions for a profile's detection type.
     pub async fn get_trained_signature_actions(
         &self,
@@ -1150,15 +1214,8 @@ impl ResilientClient {
             let p = p.clone();
             let s = s.clone();
             async move {
-                c.facial_expression_threshold(
-                    &token,
-                    &st,
-                    &act,
-                    p.as_deref(),
-                    s.as_deref(),
-                    value,
-                )
-                .await
+                c.facial_expression_threshold(&token, &st, &act, p.as_deref(), s.as_deref(), value)
+                    .await
             }
         })
         .await
