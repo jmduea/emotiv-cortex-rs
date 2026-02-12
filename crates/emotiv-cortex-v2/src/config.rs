@@ -264,9 +264,10 @@ impl CortexConfig {
     ///
     /// Optional: `EMOTIV_CORTEX_URL`, `EMOTIV_LICENSE`
     pub fn from_env() -> CortexResult<Self> {
-        let client_id = std::env::var("EMOTIV_CLIENT_ID").map_err(|_| CortexError::ConfigError {
-            reason: "EMOTIV_CLIENT_ID environment variable not set".into(),
-        })?;
+        let client_id =
+            std::env::var("EMOTIV_CLIENT_ID").map_err(|_| CortexError::ConfigError {
+                reason: "EMOTIV_CLIENT_ID environment variable not set".into(),
+            })?;
         let client_secret =
             std::env::var("EMOTIV_CLIENT_SECRET").map_err(|_| CortexError::ConfigError {
                 reason: "EMOTIV_CLIENT_SECRET environment variable not set".into(),
@@ -398,14 +399,12 @@ fn dirs_config_path() -> Option<PathBuf> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        std::env::var("HOME")
-            .ok()
-            .map(|dir| {
-                PathBuf::from(dir)
-                    .join(".config")
-                    .join("emotiv-cortex")
-                    .join("cortex.toml")
-            })
+        std::env::var("HOME").ok().map(|dir| {
+            PathBuf::from(dir)
+                .join(".config")
+                .join("emotiv-cortex")
+                .join("cortex.toml")
+        })
     }
 }
 

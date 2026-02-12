@@ -34,7 +34,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=3 {
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         let marker = client
-            .inject_marker(&token, &session.id, &format!("event_{}", i), i, "emotiv-cortex-v2-example", None)
+            .inject_marker(
+                &token,
+                &session.id,
+                &format!("event_{}", i),
+                i,
+                "emotiv-cortex-v2-example",
+                None,
+            )
             .await?;
         println!("Marker injected: {} (label: event_{})", marker.uuid, i);
     }
@@ -48,7 +55,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let records = client.query_records(&token, Some(5), None).await?;
     println!("\nRecent recordings ({}):", records.len());
     for r in &records {
-        println!("  {} — {}", r.uuid, r.title.as_deref().unwrap_or("(untitled)"));
+        println!(
+            "  {} — {}",
+            r.uuid,
+            r.title.as_deref().unwrap_or("(untitled)")
+        );
     }
 
     // Export to CSV (uncomment to actually export)

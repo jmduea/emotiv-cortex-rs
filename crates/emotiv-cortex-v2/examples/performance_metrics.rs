@@ -31,7 +31,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut met_stream = streams::subscribe_metrics(&client, &token, &session.id).await?;
 
     println!("Streaming performance metrics. Press Ctrl+C to stop.\n");
-    println!("{:<12} {:<12} {:<12} {:<12} {:<12}", "Engage", "Stress", "Relax", "Interest", "Focus");
+    println!(
+        "{:<12} {:<12} {:<12} {:<12} {:<12}",
+        "Engage", "Stress", "Relax", "Interest", "Focus"
+    );
     println!("{}", "-".repeat(60));
 
     while let Some(met) = met_stream.next().await {

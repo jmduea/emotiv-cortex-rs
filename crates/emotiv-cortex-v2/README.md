@@ -32,7 +32,7 @@ emotiv-cortex-v2 = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
-```no_run
+```rust
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
 #[tokio::main]

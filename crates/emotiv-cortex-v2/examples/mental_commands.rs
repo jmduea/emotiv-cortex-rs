@@ -26,12 +26,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Using headset: {} ({})", headset.id, model);
 
     // List available mental command actions
-    let det_info = client.get_detection_info(DetectionType::MentalCommand).await?;
+    let det_info = client
+        .get_detection_info(DetectionType::MentalCommand)
+        .await?;
     println!("Detection info: {:?}", det_info);
 
     // List and load a profile
     let profiles = client.query_profiles(&token).await?;
-    println!("Available profiles: {:?}", profiles.iter().map(|p| &p.name).collect::<Vec<_>>());
+    println!(
+        "Available profiles: {:?}",
+        profiles.iter().map(|p| &p.name).collect::<Vec<_>>()
+    );
 
     if let Some(profile) = profiles.first() {
         println!("Loading profile: {}", profile.name);
@@ -45,8 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session = client.create_session(&token, &headset.id).await?;
 
-    let mut com_stream =
-        streams::subscribe_mental_commands(&client, &token, &session.id).await?;
+    let mut com_stream = streams::subscribe_mental_commands(&client, &token, &session.id).await?;
 
     println!("Streaming mental commands. Press Ctrl+C to stop.\n");
 

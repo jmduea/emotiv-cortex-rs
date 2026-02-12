@@ -36,7 +36,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = model.channel_config();
             println!("  {} ({}):", h.id, h.status);
             println!("    Model:       {}", model);
-            println!("    Channels:    {} ({})", model.num_channels(), model.channel_names().join(", "));
+            println!(
+                "    Channels:    {} ({})",
+                model.num_channels(),
+                model.channel_names().join(", ")
+            );
             println!("    Sample rate: {} Hz", config.sampling_rate_hz);
             if let Some(fw) = &h.firmware {
                 println!("    Firmware:    {}", fw);

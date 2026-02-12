@@ -44,9 +44,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         count += 1;
         if count % 128 == 0 {
             // Print every ~1 second at 128 Hz
-            let channels: Vec<String> =
-                eeg_data.channels.iter().map(|v| format!("{:.2}", v)).collect();
-            println!("[sample {}] EEG: [{}]", eeg_data.counter, channels.join(", "));
+            let channels: Vec<String> = eeg_data
+                .channels
+                .iter()
+                .map(|v| format!("{:.2}", v))
+                .collect();
+            println!(
+                "[sample {}] EEG: [{}]",
+                eeg_data.counter,
+                channels.join(", ")
+            );
         }
     }
 
