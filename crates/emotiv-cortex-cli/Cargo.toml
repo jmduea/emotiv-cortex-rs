@@ -1,8 +1,8 @@
 [package]
 name = "emotiv-cortex-cli"
-version = "0.2.0"
-edition = "2021"
-rust-version = "1.75"
+version = "0.3.0"
+edition.workspace = true
+rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Interactive CLI explorer for the Emotiv Cortex v2 API"
 repository = "https://github.com/jmduea/emotiv-cortex-rs"
@@ -11,6 +11,9 @@ documentation = "https://docs.rs/emotiv-cortex-cli"
 readme = "README.md"
 keywords = ["emotiv", "cortex", "eeg", "cli", "bci"]
 categories = ["command-line-utilities", "science"]
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "emotiv-cortex-cli"
@@ -22,13 +25,12 @@ lsl = ["dep:lsl"]
 
 [dependencies]
 
-# Lab Streaming Layer (optional)
-lsl = { version = "0.1", optional = true }
-emotiv-cortex-v2 = { version = "=0.2.0", path = "../emotiv-cortex-v2" }
+emotiv-cortex-v2 = { version = "=0.3.0", path = "../emotiv-cortex-v2", default-features = false, features = ["rustls-tls", "config-toml"] }
 
 # Async runtime
-tokio = { version = "1", features = ["full"] }
-futures = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # Serialization
 serde_json = "1"
@@ -41,3 +43,7 @@ colored = "2"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+# Lab Streaming Layer (optional; currently unsupported on Linux)
+lsl = { version = "0.1", optional = true }

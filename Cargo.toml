@@ -5,3 +5,14 @@ members = [
     "crates/emotiv-cortex-v2",
     "crates/emotiv-cortex-cli",
 ]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
