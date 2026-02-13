@@ -32,7 +32,9 @@ pub enum CortexError {
 
     // ─── Authentication ─────────────────────────────────────────────
     /// Authentication failed (invalid client_id/client_secret or expired token).
-    #[error("Authentication failed: {reason}. Check your client_id and client_secret from the Emotiv Developer Portal.")]
+    #[error(
+        "Authentication failed: {reason}. Check your client_id and client_secret from the Emotiv Developer Portal."
+    )]
     AuthenticationFailed { reason: String },
 
     /// The Cortex token has expired and needs to be refreshed.
@@ -213,12 +215,14 @@ impl From<tokio_tungstenite::tungstenite::Error> for CortexError {
     }
 }
 
+#[cfg(feature = "native-tls")]
 impl From<native_tls::Error> for CortexError {
     fn from(err: native_tls::Error) -> Self {
         CortexError::Tls(err.to_string())
     }
 }
 
+#[cfg(feature = "config-toml")]
 impl From<toml::de::Error> for CortexError {
     fn from(err: toml::de::Error) -> Self {
         CortexError::ConfigError {
@@ -336,6 +340,7 @@ mod tests {
         assert!(err.to_string().contains("WebSocket error"));
     }
 
+    #[cfg(feature = "config-toml")]
     #[test]
     fn test_from_toml_error_conversion() {
         #[derive(Debug, serde::Deserialize)]
@@ -352,23 +357,37 @@ mod tests {
     #[test]
     fn test_is_retryable_additional_variants() {
         assert!(CortexError::WebSocket("transport reset".into()).is_retryable());
-        assert!(!CortexError::ConnectionFailed {
-            url: "wss://localhost:6868".into(),
-            reason: "refused".into(),
-        }
-        .is_retryable());
-        assert!(!CortexError::ProtocolError { reason: "bad frame".into() }.is_retryable());
+        assert!(
+            !CortexError::ConnectionFailed {
+                url: "wss://localhost:6868".into(),
+                reason: "refused".into(),
+            }
+            .is_retryable()
+        );
+        assert!(
+            !CortexError::ProtocolError {
+                reason: "bad frame".into()
+            }
+            .is_retryable()
+        );
     }
 
     #[test]
     fn test_is_connection_error_additional_variants() {
-        assert!(CortexError::ConnectionFailed {
-            url: "wss://localhost:6868".into(),
-            reason: "dial failed".into(),
-        }
-        .is_connection_error());
+        assert!(
+            CortexError::ConnectionFailed {
+                url: "wss://localhost:6868".into(),
+                reason: "dial failed".into(),
+            }
+            .is_connection_error()
+        );
         assert!(CortexError::WebSocket("closed".into()).is_connection_error());
         assert!(!CortexError::Timeout { seconds: 1 }.is_connection_error());
-        assert!(!CortexError::AuthenticationFailed { reason: "bad auth".into() }.is_connection_error());
+        assert!(
+            !CortexError::AuthenticationFailed {
+                reason: "bad auth".into()
+            }
+            .is_connection_error()
+        );
     }
 }

@@ -1,9 +1,10 @@
 mod support;
 
-use emotiv_cortex_v2::protocol::{Methods, QueryHeadsetsOptions, Streams};
-use emotiv_cortex_v2::{streams, CortexClient, CortexConfig, CortexError};
-use futures::StreamExt;
-use serde_json::{json, Value};
+use emotiv_cortex_v2::protocol::constants::{Methods, Streams};
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
+use emotiv_cortex_v2::{CortexClient, CortexConfig, CortexError, streams};
+use futures_util::StreamExt;
+use serde_json::{Value, json};
 
 use support::mock_cortex::MockCortexServer;
 
@@ -42,7 +43,9 @@ async fn connect_and_get_cortex_info_round_trip() {
 
     let mut connection = server.accept_connection().await;
     let responder = tokio::spawn(async move {
-        let request = connection.recv_request_method(Methods::GET_CORTEX_INFO).await;
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
         connection
             .send_result(rpc_id(&request), json!({"version": "mock-1.0.0"}))
             .await;
@@ -61,10 +64,11 @@ async fn connect_and_get_cortex_info_round_trip() {
 
 #[tokio::test]
 async fn authenticate_fallback_request_access_method_not_found() {
-    let mut server = match start_server_or_skip("authenticate_fallback_request_access_method_not_found").await {
-        Some(server) => server,
-        None => return,
-    };
+    let mut server =
+        match start_server_or_skip("authenticate_fallback_request_access_method_not_found").await {
+            Some(server) => server,
+            None => return,
+        };
     let config = test_config(server.ws_url());
     let mut client = CortexClient::connect(&config).await.unwrap();
 
@@ -74,7 +78,9 @@ async fn authenticate_fallback_request_access_method_not_found() {
 
         let request = connection.recv_request().await;
         methods.push(request["method"].as_str().unwrap().to_string());
-        connection.send_result(rpc_id(&request), json!({"version": "ok"})).await;
+        connection
+            .send_result(rpc_id(&request), json!({"version": "ok"}))
+            .await;
 
         let request = connection.recv_request().await;
         methods.push(request["method"].as_str().unwrap().to_string());
@@ -112,19 +118,26 @@ async fn authenticate_fallback_request_access_method_not_found() {
 
 #[tokio::test]
 async fn authenticate_fails_when_authorize_method_not_found() {
-    let mut server = match start_server_or_skip("authenticate_fails_when_authorize_method_not_found").await {
-        Some(server) => server,
-        None => return,
-    };
+    let mut server =
+        match start_server_or_skip("authenticate_fails_when_authorize_method_not_found").await {
+            Some(server) => server,
+            None => return,
+        };
     let config = test_config(server.ws_url());
     let mut client = CortexClient::connect(&config).await.unwrap();
 
     let mut connection = server.accept_connection().await;
     let responder = tokio::spawn(async move {
-        let request = connection.recv_request_method(Methods::GET_CORTEX_INFO).await;
-        connection.send_result(rpc_id(&request), json!({"version": "ok"})).await;
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_result(rpc_id(&request), json!({"version": "ok"}))
+            .await;
 
-        let request = connection.recv_request_method(Methods::REQUEST_ACCESS).await;
+        let request = connection
+            .recv_request_method(Methods::REQUEST_ACCESS)
+            .await;
         connection.send_result(rpc_id(&request), json!({})).await;
 
         let request = connection.recv_request_method(Methods::AUTHORIZE).await;
@@ -150,18 +163,23 @@ async fn authenticate_fails_when_authorize_method_not_found() {
 
 #[tokio::test]
 async fn rpc_timeout_is_reported_and_next_call_still_works() {
-    let mut server = match start_server_or_skip("rpc_timeout_is_reported_and_next_call_still_works").await {
-        Some(server) => server,
-        None => return,
-    };
+    let mut server =
+        match start_server_or_skip("rpc_timeout_is_reported_and_next_call_still_works").await {
+            Some(server) => server,
+            None => return,
+        };
     let mut config = test_config(server.ws_url());
     config.timeouts.rpc_timeout_secs = 1;
     let mut client = CortexClient::connect(&config).await.unwrap();
 
     let mut connection = server.accept_connection().await;
     let responder = tokio::spawn(async move {
-        let first_request = connection.recv_request_method(Methods::GET_CORTEX_INFO).await;
-        let second_request = connection.recv_request_method(Methods::GET_CORTEX_INFO).await;
+        let first_request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        let second_request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
         connection
             .send_result(rpc_id(&second_request), json!({"ok": true}))
             .await;
@@ -169,6 +187,7 @@ async fn rpc_timeout_is_reported_and_next_call_still_works() {
     });
 
     let timeout_err = client.get_cortex_info().await.unwrap_err();
+    assert_eq!(client.pending_response_count().await, 0);
     let second = client.get_cortex_info().await.unwrap();
     let _ = responder.await.unwrap();
 
@@ -179,11 +198,90 @@ async fn rpc_timeout_is_reported_and_next_call_still_works() {
 }
 
 #[tokio::test]
-async fn subscribe_eeg_routes_stream_event_to_typed_stream() {
-    let mut server = match start_server_or_skip("subscribe_eeg_routes_stream_event_to_typed_stream").await {
+async fn send_failure_cleans_pending_response_entry() {
+    let mut server = match start_server_or_skip("send_failure_cleans_pending_response_entry").await
+    {
         Some(server) => server,
         None => return,
     };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let _connection = server.accept_connection().await;
+    client.disconnect().await.unwrap();
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    assert!(matches!(err, CortexError::WebSocket(_)));
+    assert_eq!(client.pending_response_count().await, 0);
+}
+
+#[tokio::test]
+async fn stop_reader_finishes_without_polling_delay() {
+    let mut server = match start_server_or_skip("stop_reader_finishes_without_polling_delay").await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+    let _connection = server.accept_connection().await;
+
+    let start = std::time::Instant::now();
+    client.stop_reader().await;
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(150),
+        "reader stop took {:?}",
+        elapsed
+    );
+    assert!(!client.is_connected());
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn stream_dispatch_stats_track_overflow_drops() {
+    let mut server = match start_server_or_skip("stream_dispatch_stats_track_overflow_drops").await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let connection = server.accept_connection().await;
+    let _receivers = client.create_stream_channels(&[Streams::EEG]);
+
+    let pusher = tokio::spawn(async move {
+        let event = json!({
+            "sid": "session-1",
+            "time": 1609459200.0,
+            "eeg": [1, 0, 1.0, 2.0, 3.0, 4.0, 5.0, 0.0, 0, []]
+        });
+        for _ in 0..(1024 + 256) {
+            connection.push_event(event.clone()).await;
+        }
+    });
+    pusher.await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let stats = client.stream_dispatch_stats();
+    let eeg = stats.get("eeg").copied().unwrap_or_default();
+    assert!(eeg.delivered > 0);
+    assert!(eeg.dropped_full > 0);
+    assert_eq!(eeg.dropped_closed, 0);
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_eeg_routes_stream_event_to_typed_stream() {
+    let mut server =
+        match start_server_or_skip("subscribe_eeg_routes_stream_event_to_typed_stream").await {
+            Some(server) => server,
+            None => return,
+        };
     let config = test_config(server.ws_url());
     let mut client = CortexClient::connect(&config).await.unwrap();
 
@@ -205,13 +303,10 @@ async fn subscribe_eeg_routes_stream_event_to_typed_stream() {
     let mut eeg_stream = streams::subscribe_eeg(&client, "token", "session-1", 5)
         .await
         .unwrap();
-    let sample = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        eeg_stream.next(),
-    )
-    .await
-    .expect("timed out waiting for eeg sample")
-    .expect("typed stream ended unexpectedly");
+    let sample = tokio::time::timeout(std::time::Duration::from_secs(2), eeg_stream.next())
+        .await
+        .expect("timed out waiting for eeg sample")
+        .expect("typed stream ended unexpectedly");
 
     responder.await.unwrap();
 
@@ -233,7 +328,9 @@ async fn api_error_code_maps_to_domain_error() {
 
     let mut connection = server.accept_connection().await;
     let responder = tokio::spawn(async move {
-        let request = connection.recv_request_method(Methods::CONTROL_DEVICE).await;
+        let request = connection
+            .recv_request_method(Methods::CONTROL_DEVICE)
+            .await;
         connection
             .send_error(rpc_id(&request), -32001, "no headset connected")
             .await;
@@ -249,16 +346,19 @@ async fn api_error_code_maps_to_domain_error() {
 
 #[tokio::test]
 async fn query_headsets_options_round_trip_over_transport() {
-    let mut server = match start_server_or_skip("query_headsets_options_round_trip_over_transport").await {
-        Some(server) => server,
-        None => return,
-    };
+    let mut server =
+        match start_server_or_skip("query_headsets_options_round_trip_over_transport").await {
+            Some(server) => server,
+            None => return,
+        };
     let config = test_config(server.ws_url());
     let mut client = CortexClient::connect(&config).await.unwrap();
 
     let mut connection = server.accept_connection().await;
     let responder = tokio::spawn(async move {
-        let request = connection.recv_request_method(Methods::QUERY_HEADSETS).await;
+        let request = connection
+            .recv_request_method(Methods::QUERY_HEADSETS)
+            .await;
         connection.send_result(rpc_id(&request), json!([])).await;
         request
     });

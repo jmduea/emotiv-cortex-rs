@@ -2,10 +2,11 @@ mod support;
 
 use std::time::Duration;
 
-use emotiv_cortex_v2::protocol::{Methods, QueryHeadsetsOptions};
-use emotiv_cortex_v2::reconnect::{ConnectionEvent, ResilientClient};
 use emotiv_cortex_v2::CortexConfig;
-use serde_json::{json, Value};
+use emotiv_cortex_v2::protocol::constants::Methods;
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
+use emotiv_cortex_v2::reconnect::{ConnectionEvent, ResilientClient};
+use serde_json::{Value, json};
 
 use support::mock_cortex::{MockConnection, MockCortexServer};
 
@@ -39,10 +40,16 @@ async fn start_server_or_skip(test_name: &str) -> Option<MockCortexServer> {
 }
 
 async fn drive_auth_handshake(connection: &mut MockConnection, token: &str) {
-    let info = connection.recv_request_method(Methods::GET_CORTEX_INFO).await;
-    connection.send_result(rpc_id(&info), json!({"version": "mock"})).await;
+    let info = connection
+        .recv_request_method(Methods::GET_CORTEX_INFO)
+        .await;
+    connection
+        .send_result(rpc_id(&info), json!({"version": "mock"}))
+        .await;
 
-    let request_access = connection.recv_request_method(Methods::REQUEST_ACCESS).await;
+    let request_access = connection
+        .recv_request_method(Methods::REQUEST_ACCESS)
+        .await;
     connection
         .send_result(rpc_id(&request_access), json!({"accessGranted": true}))
         .await;
@@ -55,7 +62,11 @@ async fn drive_auth_handshake(connection: &mut MockConnection, token: &str) {
 
 #[tokio::test]
 async fn auto_reconnect_retries_failed_operation_and_emits_events() {
-    let mut server = match start_server_or_skip("auto_reconnect_retries_failed_operation_and_emits_events").await {
+    let mut server = match start_server_or_skip(
+        "auto_reconnect_retries_failed_operation_and_emits_events",
+    )
+    .await
+    {
         Some(server) => server,
         None => return,
     };
@@ -123,10 +134,11 @@ async fn auto_reconnect_retries_failed_operation_and_emits_events() {
 
 #[tokio::test]
 async fn reconnect_disabled_propagates_connection_error() {
-    let mut server = match start_server_or_skip("reconnect_disabled_propagates_connection_error").await {
-        Some(server) => server,
-        None => return,
-    };
+    let mut server =
+        match start_server_or_skip("reconnect_disabled_propagates_connection_error").await {
+            Some(server) => server,
+            None => return,
+        };
     let mut config = resilient_test_config(server.ws_url());
     config.reconnect.enabled = false;
 
@@ -164,7 +176,8 @@ async fn reconnect_disabled_propagates_connection_error() {
 
 #[tokio::test]
 async fn generate_new_token_updates_resilient_state() {
-    let mut server = match start_server_or_skip("generate_new_token_updates_resilient_state").await {
+    let mut server = match start_server_or_skip("generate_new_token_updates_resilient_state").await
+    {
         Some(server) => server,
         None => return,
     };

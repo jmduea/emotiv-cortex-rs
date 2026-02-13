@@ -9,7 +9,7 @@
 //!
 //! ```no_run
 //! use emotiv_cortex_v2::{CortexClient, CortexConfig};
-//! use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
+//! use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
 //!
 //! #[tokio::main]
 //! async fn main() -> emotiv_cortex_v2::CortexResult<()> {
@@ -60,6 +60,40 @@
 //! client_id = "your-client-id"
 //! client_secret = "your-client-secret"
 //! ```
+//!
+//! ## Feature Flags
+//!
+//! TLS backend selection is explicit:
+//! - `rustls-tls` (default)
+//! - `native-tls`
+//!
+//! Exactly one TLS backend feature must be enabled.
+//! `config-toml` (default) controls TOML parsing support in [`CortexConfig`];
+//! when disabled, file-based config loading returns [`CortexError::ConfigError`].
+//!
+//! ## Protocol Modules
+//!
+//! Protocol types are grouped by domain:
+//! - `protocol::rpc`
+//! - `protocol::constants`
+//! - `protocol::headset`
+//! - `protocol::session`
+//! - `protocol::streams`
+//! - `protocol::records`
+//! - `protocol::profiles`
+//! - `protocol::training`
+//! - `protocol::auth`
+//! - `protocol::subjects`
+
+#[cfg(all(not(feature = "rustls-tls"), not(feature = "native-tls")))]
+compile_error!(
+    "emotiv-cortex-v2 requires exactly one TLS backend feature: enable `rustls-tls` or `native-tls`."
+);
+
+#[cfg(all(feature = "rustls-tls", feature = "native-tls"))]
+compile_error!(
+    "emotiv-cortex-v2 requires exactly one TLS backend feature: `rustls-tls` and `native-tls` are mutually exclusive."
+);
 
 pub mod client;
 pub mod config;

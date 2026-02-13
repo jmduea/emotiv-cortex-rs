@@ -9,8 +9,19 @@ Provides a complete, typed interface to the Emotiv Cortex service for interactin
 - Full Cortex v2 API coverage (authentication, headsets, sessions, all 9 data streams, records, markers, profiles, BCI training)
 - Two-layer client: raw `CortexClient` for full control, `ResilientClient` for production use with auto-reconnect, token refresh, and retry
 - Typed data streams (EEG, motion, band power, performance metrics, mental commands, facial expressions, device quality)
-- Automatic TLS handling (self-signed certs for localhost)
-- Configurable via TOML file or environment variables
+- Feature-selectable TLS backend (`rustls-tls` default, `native-tls` opt-in)
+- TOML config loading can be enabled/disabled via `config-toml`
+
+## Feature Flags
+
+| Feature | Default | Description |
+|---|---|---|
+| `rustls-tls` | yes | Use rustls TLS backend (`tokio-tungstenite/rustls-tls-webpki-roots`) |
+| `native-tls` | no | Use native TLS backend (`tokio-tungstenite/native-tls`) |
+| `config-toml` | yes | Enable TOML parsing for `CortexConfig::from_file`/`discover` |
+
+Exactly one TLS backend feature must be enabled (`rustls-tls` or `native-tls`).
+If `config-toml` is disabled, `CortexConfig::from_file` and file-based `discover` return a `ConfigError` explaining how to re-enable TOML parsing.
 
 ## Which client should I use?
 
@@ -28,13 +39,21 @@ Provides a complete, typed interface to the Emotiv Cortex service for interactin
 
 ```toml
 [dependencies]
-emotiv-cortex-v2 = "0.2"
+emotiv-cortex-v2 = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+```
+
+Use native TLS instead of rustls:
+
+```toml
+[dependencies]
+emotiv-cortex-v2 = { version = "0.3", default-features = false, features = ["native-tls", "config-toml"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
 ```rust
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
-use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
 
 #[tokio::main]
 async fn main() -> emotiv_cortex_v2::CortexResult<()> {
@@ -85,6 +104,40 @@ Run the full crate test suite (unit tests, deterministic mock integration tests,
 ```bash
 cargo test -p emotiv-cortex-v2
 ```
+
+## Protocol Modules
+
+Types are now grouped by domain:
+
+- `protocol::rpc` - JSON-RPC request/response/error
+- `protocol::constants` - `Methods`, `ErrorCodes`, `Streams`
+- `protocol::headset` - headset and config-mapping types
+- `protocol::session` - `SessionInfo`
+- `protocol::streams` - stream event payloads and parsed stream structs
+- `protocol::records` - record/marker/export types
+- `protocol::profiles` - profile types and actions
+- `protocol::training` - detection/training + advanced BCI types
+- `protocol::auth` - user login types
+- `protocol::subjects` - subject and demographic types
+
+## Migration Notes
+
+Legacy flat imports were removed. Update imports like:
+
+```rust
+// old
+use emotiv_cortex_v2::protocol::{QueryHeadsetsOptions, Methods, Streams, TrainingStatus};
+
+// new
+use emotiv_cortex_v2::protocol::constants::{Methods, Streams};
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
+use emotiv_cortex_v2::protocol::training::TrainingStatus;
+```
+
+`0.3.0` also introduces request-DTO APIs for multi-parameter operations
+(`update_record_with`, `create_subject_with`, `update_subject_with`,
+`query_subjects_with`, and training threshold/signature request variants).
+See `docs/migration-0.2-to-0.3.md` for a full old/new mapping table.
 
 Live smoke tests auto-skip when prerequisites are missing, and can be forced off with:
 

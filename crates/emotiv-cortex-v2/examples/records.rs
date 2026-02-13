@@ -4,7 +4,8 @@
 //! EMOTIV_CLIENT_ID=xxx EMOTIV_CLIENT_SECRET=yyy cargo run --example records
 //! ```
 
-use emotiv_cortex_v2::protocol::{ExportFormat, QueryHeadsetsOptions};
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
+use emotiv_cortex_v2::protocol::records::ExportFormat;
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
 #[tokio::main]

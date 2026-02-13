@@ -294,7 +294,7 @@ impl CortexConfig {
         let contents = std::fs::read_to_string(path).map_err(|e| CortexError::ConfigError {
             reason: format!("Failed to read config file '{}': {}", path.display(), e),
         })?;
-        let mut config: Self = toml::from_str(&contents)?;
+        let mut config: Self = parse_toml_config(&contents)?;
 
         // Environment variable overrides
         if let Ok(id) = std::env::var("EMOTIV_CLIENT_ID") {
@@ -367,6 +367,18 @@ impl CortexConfig {
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
+#[cfg(feature = "config-toml")]
+fn parse_toml_config(contents: &str) -> CortexResult<CortexConfig> {
+    Ok(toml::from_str(contents)?)
+}
+
+#[cfg(not(feature = "config-toml"))]
+fn parse_toml_config(_contents: &str) -> CortexResult<CortexConfig> {
+    Err(CortexError::ConfigError {
+        reason: "TOML config parsing is disabled. Enable the `config-toml` feature on `emotiv-cortex-v2` to use CortexConfig::from_file/discover file loading.".into(),
+    })
+}
+
 /// Check if a WebSocket URL points to localhost.
 fn is_localhost(url: &str) -> bool {
     let authority = url
@@ -411,13 +423,25 @@ fn dirs_config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn set_env_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
+        // SAFETY: Test-only helper guarded by `ENV_LOCK`; tests do not spawn threads
+        // while mutating process environment variables.
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    fn remove_env_var<K: AsRef<OsStr>>(key: K) {
+        // SAFETY: Test-only helper guarded by `ENV_LOCK`; tests do not spawn threads
+        // while mutating process environment variables.
+        unsafe { std::env::remove_var(key) };
+    }
 
     struct EnvGuard {
         saved: Vec<(&'static str, Option<OsString>)>,
@@ -434,9 +458,9 @@ mod tests {
         fn drop(&mut self) {
             for (key, value) in &self.saved {
                 if let Some(value) = value {
-                    std::env::set_var(key, value);
+                    set_env_var(key, value);
                 } else {
-                    std::env::remove_var(key);
+                    remove_env_var(key);
                 }
             }
         }
@@ -534,6 +558,7 @@ cortex_url = "{}"
         assert!(config.should_accept_invalid_certs());
     }
 
+    #[cfg(feature = "config-toml")]
     #[test]
     fn test_deserialize_toml() {
         let toml_str = r#"
@@ -565,6 +590,31 @@ cortex_url = "{}"
         assert_eq!(config.health.interval_secs, 60);
     }
 
+    #[cfg(not(feature = "config-toml"))]
+    #[test]
+    fn test_from_file_requires_config_toml_feature() {
+        let _lock = env_lock();
+        let dir = unique_temp_dir("from-file-disabled-feature");
+        let config_path = dir.join("cortex.toml");
+        fs::write(
+            &config_path,
+            r#"
+client_id = "file-id"
+client_secret = "file-secret"
+"#,
+        )
+        .unwrap();
+
+        let err = CortexConfig::from_file(&config_path).unwrap_err();
+        assert!(matches!(err, CortexError::ConfigError { .. }));
+        assert!(
+            err.to_string().contains("config-toml"),
+            "unexpected error: {err}"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn test_from_env_requires_credentials_and_applies_overrides() {
         let _lock = env_lock();
@@ -575,10 +625,10 @@ cortex_url = "{}"
             "EMOTIV_LICENSE",
         ]);
 
-        std::env::remove_var("EMOTIV_CLIENT_ID");
-        std::env::remove_var("EMOTIV_CLIENT_SECRET");
-        std::env::remove_var("EMOTIV_CORTEX_URL");
-        std::env::remove_var("EMOTIV_LICENSE");
+        remove_env_var("EMOTIV_CLIENT_ID");
+        remove_env_var("EMOTIV_CLIENT_SECRET");
+        remove_env_var("EMOTIV_CORTEX_URL");
+        remove_env_var("EMOTIV_LICENSE");
 
         let missing_id = CortexConfig::from_env().unwrap_err();
         assert!(matches!(missing_id, CortexError::ConfigError { .. }));
@@ -587,7 +637,7 @@ cortex_url = "{}"
             "unexpected error: {missing_id}"
         );
 
-        std::env::set_var("EMOTIV_CLIENT_ID", "env-id");
+        set_env_var("EMOTIV_CLIENT_ID", "env-id");
         let missing_secret = CortexConfig::from_env().unwrap_err();
         assert!(matches!(missing_secret, CortexError::ConfigError { .. }));
         assert!(
@@ -595,9 +645,9 @@ cortex_url = "{}"
             "unexpected error: {missing_secret}"
         );
 
-        std::env::set_var("EMOTIV_CLIENT_SECRET", "env-secret");
-        std::env::set_var("EMOTIV_CORTEX_URL", "wss://env.example:6868");
-        std::env::set_var("EMOTIV_LICENSE", "LICENSE-FROM-ENV");
+        set_env_var("EMOTIV_CLIENT_SECRET", "env-secret");
+        set_env_var("EMOTIV_CORTEX_URL", "wss://env.example:6868");
+        set_env_var("EMOTIV_LICENSE", "LICENSE-FROM-ENV");
 
         let config = CortexConfig::from_env().unwrap();
         assert_eq!(config.client_id, "env-id");
@@ -606,6 +656,7 @@ cortex_url = "{}"
         assert_eq!(config.license.as_deref(), Some("LICENSE-FROM-ENV"));
     }
 
+    #[cfg(feature = "config-toml")]
     #[test]
     fn test_from_file_env_overrides_precedence() {
         let _lock = env_lock();
@@ -629,10 +680,10 @@ license = "FILE-LICENSE"
         )
         .unwrap();
 
-        std::env::set_var("EMOTIV_CLIENT_ID", "env-id");
-        std::env::set_var("EMOTIV_CLIENT_SECRET", "env-secret");
-        std::env::set_var("EMOTIV_CORTEX_URL", "wss://env.example:6868");
-        std::env::set_var("EMOTIV_LICENSE", "ENV-LICENSE");
+        set_env_var("EMOTIV_CLIENT_ID", "env-id");
+        set_env_var("EMOTIV_CLIENT_SECRET", "env-secret");
+        set_env_var("EMOTIV_CORTEX_URL", "wss://env.example:6868");
+        set_env_var("EMOTIV_LICENSE", "ENV-LICENSE");
 
         let config = CortexConfig::from_file(&config_path).unwrap();
         assert_eq!(config.client_id, "env-id");
@@ -643,6 +694,7 @@ license = "FILE-LICENSE"
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[cfg(feature = "config-toml")]
     #[test]
     fn test_discover_search_priority() {
         let _lock = env_lock();
@@ -665,19 +717,29 @@ license = "FILE-LICENSE"
 
         let explicit_path = root.join("explicit.toml");
         let env_path = root.join("env.toml");
-        write_minimal_config(&explicit_path, "explicit-id", "explicit-secret", "wss://explicit");
-        write_minimal_config(&env_path, "env-file-id", "env-file-secret", "wss://env-file");
+        write_minimal_config(
+            &explicit_path,
+            "explicit-id",
+            "explicit-secret",
+            "wss://explicit",
+        );
+        write_minimal_config(
+            &env_path,
+            "env-file-id",
+            "env-file-secret",
+            "wss://env-file",
+        );
 
         let home_root = root.join("home-root");
         let home_config = {
             #[cfg(target_os = "windows")]
             {
-                std::env::set_var("APPDATA", &home_root);
+                set_env_var("APPDATA", &home_root);
                 home_root.join("emotiv-cortex").join("cortex.toml")
             }
             #[cfg(not(target_os = "windows"))]
             {
-                std::env::set_var("HOME", &home_root);
+                set_env_var("HOME", &home_root);
                 home_root
                     .join(".config")
                     .join("emotiv-cortex")
@@ -686,14 +748,14 @@ license = "FILE-LICENSE"
         };
         fs::create_dir_all(home_config.parent().unwrap()).unwrap();
         write_minimal_config(&home_config, "home-id", "home-secret", "wss://home");
-        std::env::remove_var("EMOTIV_CLIENT_ID");
-        std::env::remove_var("EMOTIV_CLIENT_SECRET");
-        std::env::remove_var("EMOTIV_CORTEX_URL");
+        remove_env_var("EMOTIV_CLIENT_ID");
+        remove_env_var("EMOTIV_CLIENT_SECRET");
+        remove_env_var("EMOTIV_CORTEX_URL");
 
         {
             let _cwd = CurrentDirGuard::enter(&cwd);
 
-            std::env::set_var("CORTEX_CONFIG", env_path.to_string_lossy().to_string());
+            set_env_var("CORTEX_CONFIG", env_path.to_string_lossy().to_string());
             write_minimal_config(
                 &cwd.join("cortex.toml"),
                 "local-id",
@@ -707,7 +769,7 @@ license = "FILE-LICENSE"
             let via_env_pointer = CortexConfig::discover(None).unwrap();
             assert_eq!(via_env_pointer.client_id, "env-file-id");
 
-            std::env::remove_var("CORTEX_CONFIG");
+            remove_env_var("CORTEX_CONFIG");
             let via_local = CortexConfig::discover(None).unwrap();
             assert_eq!(via_local.client_id, "local-id");
 
@@ -716,9 +778,9 @@ license = "FILE-LICENSE"
             assert_eq!(via_home.client_id, "home-id");
 
             fs::remove_file(&home_config).unwrap();
-            std::env::set_var("EMOTIV_CLIENT_ID", "fallback-id");
-            std::env::set_var("EMOTIV_CLIENT_SECRET", "fallback-secret");
-            std::env::set_var("EMOTIV_CORTEX_URL", "wss://fallback");
+            set_env_var("EMOTIV_CLIENT_ID", "fallback-id");
+            set_env_var("EMOTIV_CLIENT_SECRET", "fallback-secret");
+            set_env_var("EMOTIV_CORTEX_URL", "wss://fallback");
             let via_env_only = CortexConfig::discover(None).unwrap();
             assert_eq!(via_env_only.client_id, "fallback-id");
             assert_eq!(via_env_only.client_secret, "fallback-secret");
@@ -728,6 +790,7 @@ license = "FILE-LICENSE"
         fs::remove_dir_all(root).unwrap();
     }
 
+    #[cfg(feature = "config-toml")]
     #[test]
     fn test_from_file_missing_and_invalid_errors() {
         let _lock = env_lock();

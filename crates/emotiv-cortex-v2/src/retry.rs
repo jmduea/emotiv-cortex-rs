@@ -315,7 +315,10 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(result.unwrap_err(), CortexError::RetriesExhausted { .. }));
+        assert!(matches!(
+            result.unwrap_err(),
+            CortexError::RetriesExhausted { .. }
+        ));
         assert_eq!(attempts.load(Ordering::SeqCst), 4); // initial + 3 retries
         assert!(
             start.elapsed() >= Duration::from_millis(4),

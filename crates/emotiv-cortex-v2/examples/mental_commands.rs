@@ -4,11 +4,13 @@
 //! EMOTIV_CLIENT_ID=xxx EMOTIV_CLIENT_SECRET=yyy cargo run --example mental_commands
 //! ```
 
-use futures::StreamExt;
+use futures_util::StreamExt;
 
 use emotiv_cortex_v2::headset::HeadsetModel;
-use emotiv_cortex_v2::protocol::{DetectionType, ProfileAction, QueryHeadsetsOptions};
-use emotiv_cortex_v2::{streams, CortexClient, CortexConfig};
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
+use emotiv_cortex_v2::protocol::profiles::ProfileAction;
+use emotiv_cortex_v2::protocol::training::DetectionType;
+use emotiv_cortex_v2::{CortexClient, CortexConfig, streams};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

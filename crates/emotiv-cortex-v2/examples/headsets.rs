@@ -5,7 +5,7 @@
 //! ```
 
 use emotiv_cortex_v2::headset::HeadsetModel;
-use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
 #[tokio::main]

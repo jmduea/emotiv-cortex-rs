@@ -4,9 +4,9 @@
 //! EMOTIV_CLIENT_ID=xxx EMOTIV_CLIENT_SECRET=yyy cargo run --example resilient
 //! ```
 
-use emotiv_cortex_v2::reconnect::{ConnectionEvent, ResilientClient};
-use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
 use emotiv_cortex_v2::CortexConfig;
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
+use emotiv_cortex_v2::reconnect::{ConnectionEvent, ResilientClient};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use futures::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;

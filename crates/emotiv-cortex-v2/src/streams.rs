@@ -31,14 +31,15 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::Stream;
+use futures_core::Stream;
 use tokio::sync::mpsc;
 
 use crate::client::CortexClient;
 use crate::error::{CortexError, CortexResult};
-use crate::protocol::{
+use crate::protocol::constants::Streams;
+use crate::protocol::streams::{
     BandPowerData, DeviceQuality, EegData, EegQuality, EqEvent, FacialExpression, MentalCommand,
-    MotEvent, MotionData, PerformanceMetrics, PowEvent, Streams, SysEvent,
+    MotEvent, MotionData, PerformanceMetrics, PowEvent, SysEvent,
 };
 
 /// Generic stream adapter that receives raw JSON events from an mpsc channel
@@ -51,7 +52,7 @@ use crate::protocol::{
 ///
 /// ```rust
 /// use emotiv_cortex_v2::streams::TypedStream;
-/// use futures::StreamExt;
+/// use futures_util::StreamExt;
 /// use tokio::sync::mpsc;
 ///
 /// let rt = tokio::runtime::Builder::new_current_thread()
@@ -406,7 +407,7 @@ pub async fn unsubscribe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::StreamExt;
+    use futures_util::StreamExt;
 
     #[tokio::test]
     async fn test_typed_stream_parses_valid_events() {

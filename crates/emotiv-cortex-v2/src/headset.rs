@@ -26,7 +26,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::HeadsetInfo;
+use crate::protocol::headset::HeadsetInfo;
 
 /// Emotiv headset model identifier.
 ///

@@ -29,8 +29,8 @@
 //! ## TLS Note
 //!
 //! The Emotiv Cortex service runs at `wss://localhost:6868` with a
-//! self-signed TLS certificate. We configure `native-tls` to accept
-//! this certificate for localhost connections only.
+//! self-signed TLS certificate. TLS backend selection is feature-driven:
+//! `rustls-tls` (default) or `native-tls` (opt-in).
 //!
 //! ## Method Contract Template
 //!
@@ -42,29 +42,51 @@
 //! - error propagation and retry/idempotency notes
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use futures::{stream::SplitSink, stream::SplitStream, SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
+#[cfg(all(feature = "native-tls", not(feature = "rustls-tls")))]
 use native_tls::TlsConnector as NativeTlsConnector;
+#[cfg(feature = "rustls-tls")]
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+#[cfg(feature = "rustls-tls")]
+use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
+#[cfg(feature = "rustls-tls")]
+use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinHandle;
+#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+use tokio_tungstenite::connect_async_tls_with_config;
+#[cfg(not(any(feature = "native-tls", feature = "rustls-tls")))]
+use tokio_tungstenite::tungstenite::error::UrlError;
 use tokio_tungstenite::{
-    connect_async_tls_with_config,
-    tungstenite::{http, Message},
     Connector, MaybeTlsStream, WebSocketStream,
+    tungstenite::{Message, http},
 };
 
 use crate::config::CortexConfig;
 use crate::error::{CortexError, CortexResult};
-use crate::protocol::{
+use crate::protocol::auth::UserLoginInfo;
+use crate::protocol::constants::{Methods, Streams};
+use crate::protocol::headset::{
     ConfigMappingListValue, ConfigMappingMode, ConfigMappingRequest, ConfigMappingResponse,
-    ConfigMappingValue, CortexRequest, CortexResponse, CurrentProfileInfo, DemographicAttribute,
-    DetectionInfo, DetectionType, ExportFormat, HeadsetClockSyncResult, HeadsetInfo, MarkerInfo,
-    Methods, ProfileAction, ProfileInfo, QueryHeadsetsOptions, RecordInfo, SessionInfo, Streams,
-    SubjectInfo, TrainedSignatureActions, TrainingStatus, TrainingTime, UserLoginInfo,
+    ConfigMappingValue, HeadsetClockSyncResult, HeadsetInfo, QueryHeadsetsOptions,
+};
+use crate::protocol::profiles::{CurrentProfileInfo, ProfileAction, ProfileInfo};
+use crate::protocol::records::{ExportFormat, MarkerInfo, RecordInfo, UpdateRecordRequest};
+use crate::protocol::rpc::{CortexRequest, CortexResponse};
+use crate::protocol::session::SessionInfo;
+use crate::protocol::subjects::{
+    DemographicAttribute, QuerySubjectsRequest, SubjectInfo, SubjectRequest,
+};
+use crate::protocol::training::{
+    DetectionInfo, DetectionType, FacialExpressionSignatureTypeRequest,
+    FacialExpressionThresholdRequest, MentalCommandTrainingThresholdRequest,
+    TrainedSignatureActions, TrainingStatus, TrainingTime,
 };
 
 /// Connection timeout for the initial WebSocket handshake.
@@ -72,6 +94,118 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Channel buffer size for data stream events.
 const STREAM_CHANNEL_BUFFER: usize = 1024;
+
+type ConnectOutput = Result<
+    (
+        WebSocketStream<MaybeTlsStream<TcpStream>>,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    tokio_tungstenite::tungstenite::Error,
+>;
+
+#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+fn connect_websocket(
+    uri: http::Uri,
+    connector: Option<Connector>,
+) -> impl std::future::Future<Output = ConnectOutput> {
+    connect_async_tls_with_config(
+        uri, None, // WebSocket config
+        true, // disable_nagle
+        connector,
+    )
+}
+
+#[cfg(not(any(feature = "native-tls", feature = "rustls-tls")))]
+async fn connect_websocket(_uri: http::Uri, _connector: Option<Connector>) -> ConnectOutput {
+    Err(tokio_tungstenite::tungstenite::Error::Url(
+        UrlError::TlsFeatureNotEnabled,
+    ))
+}
+
+#[cfg(all(feature = "native-tls", not(feature = "rustls-tls")))]
+fn build_tls_connector(config: &CortexConfig, url: &str) -> CortexResult<Option<Connector>> {
+    let tls_connector = NativeTlsConnector::builder()
+        .danger_accept_invalid_certs(config.should_accept_invalid_certs())
+        .build()
+        .map_err(|e| CortexError::ConnectionFailed {
+            url: url.to_string(),
+            reason: format!("TLS configuration failed: {}", e),
+        })?;
+
+    Ok(Some(Connector::NativeTls(tls_connector)))
+}
+
+#[cfg(all(feature = "rustls-tls", not(feature = "native-tls")))]
+fn build_tls_connector(config: &CortexConfig, _url: &str) -> CortexResult<Option<Connector>> {
+    if !config.should_accept_invalid_certs() {
+        return Ok(None);
+    }
+
+    let tls_config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
+        .with_no_client_auth();
+
+    Ok(Some(Connector::Rustls(Arc::new(tls_config))))
+}
+
+#[cfg(any(
+    all(feature = "native-tls", feature = "rustls-tls"),
+    all(not(feature = "native-tls"), not(feature = "rustls-tls"))
+))]
+fn build_tls_connector(_config: &CortexConfig, _url: &str) -> CortexResult<Option<Connector>> {
+    Ok(None)
+}
+
+#[cfg(feature = "rustls-tls")]
+#[derive(Debug)]
+struct InsecureCertVerifier;
+
+#[cfg(feature = "rustls-tls")]
+impl ServerCertVerifier for InsecureCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::ED25519,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA256,
+        ]
+    }
+}
 
 /// Type alias for the write half of the WebSocket connection.
 type WsWriter = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
@@ -87,6 +221,36 @@ pub type StreamSenders = HashMap<&'static str, mpsc::Sender<serde_json::Value>>;
 
 /// Receivers for consuming stream data events.
 pub type StreamReceivers = HashMap<&'static str, mpsc::Receiver<serde_json::Value>>;
+
+/// Snapshot of stream dispatch behavior for one stream key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamDispatchStats {
+    /// Number of events successfully queued to the stream channel.
+    pub delivered: u64,
+    /// Number of events dropped because the channel was full.
+    pub dropped_full: u64,
+    /// Number of events dropped because the channel was closed.
+    pub dropped_closed: u64,
+}
+
+#[derive(Debug, Default)]
+struct StreamDispatchCounters {
+    delivered: AtomicU64,
+    dropped_full: AtomicU64,
+    dropped_closed: AtomicU64,
+}
+
+impl StreamDispatchCounters {
+    fn snapshot(&self) -> StreamDispatchStats {
+        StreamDispatchStats {
+            delivered: self.delivered.load(Ordering::Relaxed),
+            dropped_full: self.dropped_full.load(Ordering::Relaxed),
+            dropped_closed: self.dropped_closed.load(Ordering::Relaxed),
+        }
+    }
+}
+
+type StreamDispatchCounterMap = HashMap<&'static str, Arc<StreamDispatchCounters>>;
 
 /// WebSocket JSON-RPC client for the Emotiv Cortex API.
 ///
@@ -113,10 +277,16 @@ pub struct CortexClient {
     /// Whether the reader loop is currently running.
     reader_running: Arc<AtomicBool>,
 
+    /// Shutdown signal for the reader loop.
+    reader_shutdown: tokio::sync::watch::Sender<bool>,
+
     /// Shared stream senders, dynamically updatable without restarting
     /// the reader loop. The reader holds a clone of this Arc and checks
     /// it on each data message.
     stream_senders: Arc<std::sync::Mutex<Option<StreamSenders>>>,
+
+    /// Per-stream dispatch counters for backpressure/drop observability.
+    stream_dispatch_counters: Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
 
     /// RPC call timeout (from config).
     rpc_timeout: Duration,
@@ -132,19 +302,8 @@ impl CortexClient {
     /// TLS is configured based on the [`CortexConfig`] settings.
     pub async fn connect(config: &CortexConfig) -> CortexResult<Self> {
         let url = &config.cortex_url;
-        let accept_invalid_certs = config.should_accept_invalid_certs();
         let rpc_timeout = Duration::from_secs(config.timeouts.rpc_timeout_secs);
-
-        // Configure TLS
-        let tls_connector = NativeTlsConnector::builder()
-            .danger_accept_invalid_certs(accept_invalid_certs)
-            .build()
-            .map_err(|e| CortexError::ConnectionFailed {
-                url: url.clone(),
-                reason: format!("TLS configuration failed: {}", e),
-            })?;
-
-        let connector = Connector::NativeTls(tls_connector);
+        let connector = build_tls_connector(config, url)?;
 
         // Parse the WebSocket URL as a URI for the connection.
         let uri: http::Uri =
@@ -154,12 +313,7 @@ impl CortexClient {
                     reason: format!("Invalid URL: {}", e),
                 })?;
 
-        let connect_fut = connect_async_tls_with_config(
-            uri,
-            None, // WebSocket config
-            true, // disable_nagle
-            Some(connector),
-        );
+        let connect_fut = connect_websocket(uri, connector);
 
         let (ws, response) = tokio::time::timeout(CONNECT_TIMEOUT, connect_fut)
             .await
@@ -178,8 +332,11 @@ impl CortexClient {
             Arc::new(Mutex::new(HashMap::new()));
 
         let reader_running = Arc::new(AtomicBool::new(true));
+        let (reader_shutdown, reader_shutdown_rx) = tokio::sync::watch::channel(false);
         let stream_senders: Arc<std::sync::Mutex<Option<StreamSenders>>> =
             Arc::new(std::sync::Mutex::new(None));
+        let stream_dispatch_counters: Arc<std::sync::Mutex<StreamDispatchCounterMap>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
 
         // Start the reader loop immediately — it needs to be running before
         // any API calls so that responses can be dispatched.
@@ -188,6 +345,8 @@ impl CortexClient {
             Arc::clone(&pending_responses),
             Arc::clone(&reader_running),
             Arc::clone(&stream_senders),
+            Arc::clone(&stream_dispatch_counters),
+            reader_shutdown_rx,
         );
 
         Ok(Self {
@@ -196,7 +355,9 @@ impl CortexClient {
             next_id: AtomicU64::new(1),
             reader_handle: Some(reader_handle),
             reader_running,
+            reader_shutdown,
             stream_senders,
+            stream_dispatch_counters,
             rpc_timeout,
             clock_origin: Instant::now(),
         })
@@ -221,12 +382,20 @@ impl CortexClient {
         pending_responses: Arc<Mutex<HashMap<u64, PendingResponse>>>,
         running: Arc<AtomicBool>,
         stream_senders: Arc<std::sync::Mutex<Option<StreamSenders>>>,
+        stream_dispatch_counters: Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     ) -> JoinHandle<()> {
         tokio::spawn(async move {
             while running.load(Ordering::SeqCst) {
                 let msg = tokio::select! {
                     msg = reader.next() => msg,
-                    _ = tokio::time::sleep(Duration::from_millis(100)) => continue,
+                    changed = shutdown_rx.changed() => {
+                        match changed {
+                            Ok(()) if *shutdown_rx.borrow() => break,
+                            Ok(()) => continue,
+                            Err(_) => break,
+                        }
+                    },
                 };
 
                 match msg {
@@ -281,12 +450,36 @@ impl CortexClient {
                         }
 
                         // Not an RPC response — route as a stream data event.
-                        if let Ok(guard) = stream_senders.lock() {
-                            if let Some(ref senders) = *guard {
-                                for (key, tx) in senders.iter() {
-                                    if value.get(*key).is_some() {
-                                        let _ = tx.try_send(value);
-                                        break;
+                        let target_sender = if let Ok(guard) = stream_senders.lock() {
+                            guard.as_ref().and_then(|senders| {
+                                senders.iter().find_map(|(key, tx)| {
+                                    value.get(*key).is_some().then(|| (*key, tx.clone()))
+                                })
+                            })
+                        } else {
+                            None
+                        };
+
+                        if let Some((stream_key, tx)) = target_sender {
+                            let counter = stream_dispatch_counters
+                                .lock()
+                                .ok()
+                                .and_then(|counters| counters.get(stream_key).cloned());
+
+                            match tx.try_send(value) {
+                                Ok(()) => {
+                                    if let Some(counter) = counter {
+                                        counter.delivered.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                                Err(TrySendError::Full(_)) => {
+                                    if let Some(counter) = counter {
+                                        counter.dropped_full.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                                Err(TrySendError::Closed(_)) => {
+                                    if let Some(counter) = counter {
+                                        counter.dropped_closed.fetch_add(1, Ordering::Relaxed);
                                     }
                                 }
                             }
@@ -323,6 +516,13 @@ impl CortexClient {
                 }
             }
 
+            let mut pending = pending_responses.lock().await;
+            for (_, tx) in pending.drain() {
+                let _ = tx.send(Err(CortexError::ConnectionLost {
+                    reason: "Reader loop stopped".into(),
+                }));
+            }
+
             tracing::debug!("Reader loop exiting");
             running.store(false, Ordering::SeqCst);
         })
@@ -353,31 +553,32 @@ impl CortexClient {
         }
 
         // Send the request via the shared writer
-        {
+        let send_result = {
             let mut writer = self.writer.lock().await;
-            writer
-                .send(Message::Text(json.into()))
-                .await
-                .map_err(|e| CortexError::WebSocket(format!("Send error: {}", e)))?;
+            writer.send(Message::Text(json.into())).await
+        };
+        if let Err(e) = send_result {
+            let mut pending = self.pending_responses.lock().await;
+            pending.remove(&id);
+            return Err(CortexError::WebSocket(format!("Send error: {}", e)));
         }
 
         // Wait for the reader loop to deliver the response
         let timeout_secs = self.rpc_timeout.as_secs();
-        let result = tokio::time::timeout(self.rpc_timeout, rx)
-            .await
-            .map_err(|_| {
-                // Clean up the pending entry on timeout
-                let pending = self.pending_responses.clone();
-                tokio::spawn(async move {
-                    pending.lock().await.remove(&id);
+        let result = match tokio::time::timeout(self.rpc_timeout, rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                return Err(CortexError::ConnectionLost {
+                    reason: "Response channel dropped (reader loop died)".into(),
                 });
-                CortexError::Timeout {
+            }
+            Err(_) => {
+                self.pending_responses.lock().await.remove(&id);
+                return Err(CortexError::Timeout {
                     seconds: timeout_secs,
-                }
-            })?
-            .map_err(|_| CortexError::ConnectionLost {
-                reason: "Response channel dropped (reader loop died)".into(),
-            })??;
+                });
+            }
+        }?;
 
         tracing::debug!(method, id, "Cortex RPC succeeded");
         Ok(result)
@@ -394,23 +595,25 @@ impl CortexClient {
         params
     }
 
-    fn sync_with_headset_clock_params(
-        &self,
-        headset_id: &str,
-    ) -> CortexResult<serde_json::Value> {
+    fn sync_with_headset_clock_params(&self, headset_id: &str) -> CortexResult<serde_json::Value> {
         let monotonic_time = self.clock_origin.elapsed().as_secs_f64();
-        let system_duration =
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_err(|e| CortexError::ProtocolError {
-                    reason: format!("System clock is before UNIX epoch: {}", e),
-                })?;
+        let system_time = Self::current_epoch_millis()?;
 
         Ok(Self::sync_with_headset_clock_params_with_times(
             headset_id,
             monotonic_time,
-            system_duration.as_millis() as u64,
+            system_time,
         ))
+    }
+
+    fn current_epoch_millis() -> CortexResult<u64> {
+        let system_duration = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
+            CortexError::ProtocolError {
+                reason: format!("System clock is before UNIX epoch: {}", e),
+            }
+        })?;
+
+        Ok(system_duration.as_millis() as u64)
     }
 
     fn sync_with_headset_clock_params_with_times(
@@ -569,6 +772,99 @@ impl CortexClient {
         Ok(params)
     }
 
+    fn subject_params(cortex_token: &str, request: &SubjectRequest) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "subjectName": request.subject_name.as_str(),
+        });
+
+        if let Some(dob) = &request.date_of_birth {
+            params["dateOfBirth"] = serde_json::json!(dob);
+        }
+        if let Some(sex) = &request.sex {
+            params["sex"] = serde_json::json!(sex);
+        }
+        if let Some(country_code) = &request.country_code {
+            params["countryCode"] = serde_json::json!(country_code);
+        }
+        if let Some(state) = &request.state {
+            params["state"] = serde_json::json!(state);
+        }
+        if let Some(city) = &request.city {
+            params["city"] = serde_json::json!(city);
+        }
+        if let Some(attributes) = &request.attributes {
+            params["attributes"] = serde_json::json!(attributes);
+        }
+
+        params
+    }
+
+    fn query_subjects_params(
+        cortex_token: &str,
+        request: &QuerySubjectsRequest,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "query": request.query.clone(),
+            "orderBy": request.order_by.clone(),
+        });
+
+        if let Some(limit) = request.limit {
+            params["limit"] = serde_json::json!(limit);
+        }
+        if let Some(offset) = request.offset {
+            params["offset"] = serde_json::json!(offset);
+        }
+
+        params
+    }
+
+    fn facial_expression_signature_type_params(
+        cortex_token: &str,
+        request: &FacialExpressionSignatureTypeRequest,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": request.status.as_str(),
+        });
+
+        if let Some(profile) = &request.profile {
+            params["profile"] = serde_json::json!(profile);
+        }
+        if let Some(session) = &request.session {
+            params["session"] = serde_json::json!(session);
+        }
+        if let Some(signature) = &request.signature {
+            params["signature"] = serde_json::json!(signature);
+        }
+
+        params
+    }
+
+    fn facial_expression_threshold_params(
+        cortex_token: &str,
+        request: &FacialExpressionThresholdRequest,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": request.status.as_str(),
+            "action": request.action.as_str(),
+        });
+
+        if let Some(profile) = &request.profile {
+            params["profile"] = serde_json::json!(profile);
+        }
+        if let Some(session) = &request.session {
+            params["session"] = serde_json::json!(session);
+        }
+        if let Some(value) = request.value {
+            params["value"] = serde_json::json!(value);
+        }
+
+        params
+    }
+
     // ─── Streaming ──────────────────────────────────────────────────────
 
     /// Stream name validation and mapping to static keys.
@@ -597,15 +893,21 @@ impl CortexClient {
     pub fn create_stream_channels(&self, streams: &[&str]) -> StreamReceivers {
         let mut senders = StreamSenders::new();
         let mut receivers = StreamReceivers::new();
+        let mut counters = StreamDispatchCounterMap::new();
 
         for &stream in streams {
+            let stream_key = Self::stream_key(stream);
             let (tx, rx) = mpsc::channel(STREAM_CHANNEL_BUFFER);
-            senders.insert(Self::stream_key(stream), tx);
-            receivers.insert(Self::stream_key(stream), rx);
+            senders.insert(stream_key, tx);
+            receivers.insert(stream_key, rx);
+            counters.insert(stream_key, Arc::new(StreamDispatchCounters::default()));
         }
 
         if let Ok(mut guard) = self.stream_senders.lock() {
             *guard = Some(senders);
+        }
+        if let Ok(mut guard) = self.stream_dispatch_counters.lock() {
+            *guard = counters;
         }
 
         receivers
@@ -615,10 +917,16 @@ impl CortexClient {
     ///
     /// Returns a receiver for the new channel.
     pub fn add_stream_channel(&self, stream: &str) -> Option<mpsc::Receiver<serde_json::Value>> {
+        let stream_key = Self::stream_key(stream);
         let (tx, rx) = mpsc::channel(STREAM_CHANNEL_BUFFER);
         if let Ok(mut guard) = self.stream_senders.lock() {
             let senders = guard.get_or_insert_with(StreamSenders::new);
-            senders.insert(Self::stream_key(stream), tx);
+            senders.insert(stream_key, tx);
+            if let Ok(mut counters) = self.stream_dispatch_counters.lock() {
+                counters
+                    .entry(stream_key)
+                    .or_insert_with(|| Arc::new(StreamDispatchCounters::default()));
+            }
             Some(rx)
         } else {
             None
@@ -629,7 +937,11 @@ impl CortexClient {
     pub fn remove_stream_channel(&self, stream: &str) {
         if let Ok(mut guard) = self.stream_senders.lock() {
             if let Some(ref mut senders) = *guard {
-                senders.remove(stream);
+                let stream_key = Self::stream_key(stream);
+                senders.remove(stream_key);
+                if let Ok(mut counters) = self.stream_dispatch_counters.lock() {
+                    counters.remove(stream_key);
+                }
             }
         }
     }
@@ -639,6 +951,26 @@ impl CortexClient {
         if let Ok(mut guard) = self.stream_senders.lock() {
             *guard = None;
         }
+        if let Ok(mut counters) = self.stream_dispatch_counters.lock() {
+            counters.clear();
+        }
+    }
+
+    /// Returns the current stream dispatch stats keyed by stream type (`"eeg"`, `"mot"`, ...).
+    pub fn stream_dispatch_stats(&self) -> HashMap<&'static str, StreamDispatchStats> {
+        if let Ok(counters) = self.stream_dispatch_counters.lock() {
+            counters
+                .iter()
+                .map(|(stream, counter)| (*stream, counter.snapshot()))
+                .collect()
+        } else {
+            HashMap::new()
+        }
+    }
+
+    /// Returns the number of currently pending RPC responses.
+    pub async fn pending_response_count(&self) -> usize {
+        self.pending_responses.lock().await.len()
     }
 
     // ─── Authentication ─────────────────────────────────────────────────
@@ -823,7 +1155,10 @@ impl CortexClient {
         options: QueryHeadsetsOptions,
     ) -> CortexResult<Vec<HeadsetInfo>> {
         let result = self
-            .call(Methods::QUERY_HEADSETS, Self::query_headsets_params(options))
+            .call(
+                Methods::QUERY_HEADSETS,
+                Self::query_headsets_params(options),
+            )
             .await?;
 
         let headsets: Vec<HeadsetInfo> =
@@ -888,7 +1223,10 @@ impl CortexClient {
     /// Returns: typed clock sync details from Cortex.
     /// Errors: session/headset/transport errors from Cortex are propagated.
     /// Related methods: [`Self::query_headsets`], [`Self::connect_headset`].
-    pub async fn sync_with_headset_clock(&self, headset_id: &str) -> CortexResult<HeadsetClockSyncResult> {
+    pub async fn sync_with_headset_clock(
+        &self,
+        headset_id: &str,
+    ) -> CortexResult<HeadsetClockSyncResult> {
         let result = self
             .call(
                 Methods::SYNC_WITH_HEADSET_CLOCK,
@@ -1260,26 +1598,23 @@ impl CortexClient {
     }
 
     /// Update a recording's metadata (title, description, tags).
-    pub async fn update_record(
+    pub async fn update_record_with(
         &self,
         cortex_token: &str,
-        record_id: &str,
-        title: Option<&str>,
-        description: Option<&str>,
-        tags: Option<&[String]>,
+        request: &UpdateRecordRequest,
     ) -> CortexResult<RecordInfo> {
         let mut params = serde_json::json!({
             "cortexToken": cortex_token,
-            "record": record_id,
+            "record": request.record_id.as_str(),
         });
 
-        if let Some(t) = title {
+        if let Some(t) = &request.title {
             params["title"] = serde_json::json!(t);
         }
-        if let Some(d) = description {
+        if let Some(d) = &request.description {
             params["description"] = serde_json::json!(d);
         }
-        if let Some(t) = tags {
+        if let Some(t) = &request.tags {
             params["tags"] = serde_json::json!(t);
         }
 
@@ -1296,6 +1631,25 @@ impl CortexClient {
         serde_json::from_value(record_value).map_err(|e| CortexError::ProtocolError {
             reason: format!("Failed to parse record info: {}", e),
         })
+    }
+
+    /// Update a recording's metadata (title, description, tags).
+    #[deprecated(note = "Use `update_record_with` and `UpdateRecordRequest` instead.")]
+    pub async fn update_record(
+        &self,
+        cortex_token: &str,
+        record_id: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        tags: Option<&[String]>,
+    ) -> CortexResult<RecordInfo> {
+        let request = UpdateRecordRequest {
+            record_id: record_id.to_string(),
+            title: title.map(ToString::to_string),
+            description: description.map(ToString::to_string),
+            tags: tags.map(|values| values.to_vec()),
+        };
+        self.update_record_with(cortex_token, &request).await
     }
 
     /// Delete one or more recordings.
@@ -1379,12 +1733,10 @@ impl CortexClient {
         port: &str,
         time: Option<f64>,
     ) -> CortexResult<MarkerInfo> {
-        let epoch_ms = time.unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock before UNIX epoch")
-                .as_millis() as f64
-        });
+        let epoch_ms = match time {
+            Some(value) => value,
+            None => Self::current_epoch_millis()? as f64,
+        };
 
         let params = serde_json::json!({
             "cortexToken": cortex_token,
@@ -1440,6 +1792,25 @@ impl CortexClient {
     // ─── Subjects ────────────────────────────────────────────────────────
 
     /// Create a new subject.
+    pub async fn create_subject_with(
+        &self,
+        cortex_token: &str,
+        request: &SubjectRequest,
+    ) -> CortexResult<SubjectInfo> {
+        let result = self
+            .call(
+                Methods::CREATE_SUBJECT,
+                Self::subject_params(cortex_token, request),
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse subject info: {}", e),
+        })
+    }
+
+    /// Create a new subject.
+    #[deprecated(note = "Use `create_subject_with` and `SubjectRequest` instead.")]
     #[allow(clippy::too_many_arguments)]
     pub async fn create_subject(
         &self,
@@ -1452,31 +1823,30 @@ impl CortexClient {
         city: Option<&str>,
         attributes: Option<&[serde_json::Value]>,
     ) -> CortexResult<SubjectInfo> {
-        let mut params = serde_json::json!({
-            "cortexToken": cortex_token,
-            "subjectName": subject_name,
-        });
+        let request = SubjectRequest {
+            subject_name: subject_name.to_string(),
+            date_of_birth: date_of_birth.map(ToString::to_string),
+            sex: sex.map(ToString::to_string),
+            country_code: country_code.map(ToString::to_string),
+            state: state.map(ToString::to_string),
+            city: city.map(ToString::to_string),
+            attributes: attributes.map(|values| values.to_vec()),
+        };
+        self.create_subject_with(cortex_token, &request).await
+    }
 
-        if let Some(dob) = date_of_birth {
-            params["dateOfBirth"] = serde_json::json!(dob);
-        }
-        if let Some(s) = sex {
-            params["sex"] = serde_json::json!(s);
-        }
-        if let Some(cc) = country_code {
-            params["countryCode"] = serde_json::json!(cc);
-        }
-        if let Some(st) = state {
-            params["state"] = serde_json::json!(st);
-        }
-        if let Some(c) = city {
-            params["city"] = serde_json::json!(c);
-        }
-        if let Some(attrs) = attributes {
-            params["attributes"] = serde_json::json!(attrs);
-        }
-
-        let result = self.call(Methods::CREATE_SUBJECT, params).await?;
+    /// Update an existing subject's information.
+    pub async fn update_subject_with(
+        &self,
+        cortex_token: &str,
+        request: &SubjectRequest,
+    ) -> CortexResult<SubjectInfo> {
+        let result = self
+            .call(
+                Methods::UPDATE_SUBJECT,
+                Self::subject_params(cortex_token, request),
+            )
+            .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
             reason: format!("Failed to parse subject info: {}", e),
@@ -1484,6 +1854,7 @@ impl CortexClient {
     }
 
     /// Update an existing subject's information.
+    #[deprecated(note = "Use `update_subject_with` and `SubjectRequest` instead.")]
     #[allow(clippy::too_many_arguments)]
     pub async fn update_subject(
         &self,
@@ -1496,35 +1867,16 @@ impl CortexClient {
         city: Option<&str>,
         attributes: Option<&[serde_json::Value]>,
     ) -> CortexResult<SubjectInfo> {
-        let mut params = serde_json::json!({
-            "cortexToken": cortex_token,
-            "subjectName": subject_name,
-        });
-
-        if let Some(dob) = date_of_birth {
-            params["dateOfBirth"] = serde_json::json!(dob);
-        }
-        if let Some(s) = sex {
-            params["sex"] = serde_json::json!(s);
-        }
-        if let Some(cc) = country_code {
-            params["countryCode"] = serde_json::json!(cc);
-        }
-        if let Some(st) = state {
-            params["state"] = serde_json::json!(st);
-        }
-        if let Some(c) = city {
-            params["city"] = serde_json::json!(c);
-        }
-        if let Some(attrs) = attributes {
-            params["attributes"] = serde_json::json!(attrs);
-        }
-
-        let result = self.call(Methods::UPDATE_SUBJECT, params).await?;
-
-        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse subject info: {}", e),
-        })
+        let request = SubjectRequest {
+            subject_name: subject_name.to_string(),
+            date_of_birth: date_of_birth.map(ToString::to_string),
+            sex: sex.map(ToString::to_string),
+            country_code: country_code.map(ToString::to_string),
+            state: state.map(ToString::to_string),
+            city: city.map(ToString::to_string),
+            attributes: attributes.map(|values| values.to_vec()),
+        };
+        self.update_subject_with(cortex_token, &request).await
     }
 
     /// Delete one or more subjects.
@@ -1546,28 +1898,17 @@ impl CortexClient {
     /// Query subjects with filtering, sorting, and pagination.
     ///
     /// Returns a tuple of (subjects, total_count).
-    pub async fn query_subjects(
+    pub async fn query_subjects_with(
         &self,
         cortex_token: &str,
-        query: serde_json::Value,
-        order_by: serde_json::Value,
-        limit: Option<u32>,
-        offset: Option<u32>,
+        request: &QuerySubjectsRequest,
     ) -> CortexResult<(Vec<SubjectInfo>, u32)> {
-        let mut params = serde_json::json!({
-            "cortexToken": cortex_token,
-            "query": query,
-            "orderBy": order_by,
-        });
-
-        if let Some(l) = limit {
-            params["limit"] = serde_json::json!(l);
-        }
-        if let Some(o) = offset {
-            params["offset"] = serde_json::json!(o);
-        }
-
-        let result = self.call(Methods::QUERY_SUBJECTS, params).await?;
+        let result = self
+            .call(
+                Methods::QUERY_SUBJECTS,
+                Self::query_subjects_params(cortex_token, request),
+            )
+            .await?;
 
         let count = result.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
@@ -1582,6 +1923,27 @@ impl CortexClient {
             })?;
 
         Ok((subjects, count))
+    }
+
+    /// Query subjects with filtering, sorting, and pagination.
+    ///
+    /// Returns a tuple of (subjects, total_count).
+    #[deprecated(note = "Use `query_subjects_with` and `QuerySubjectsRequest` instead.")]
+    pub async fn query_subjects(
+        &self,
+        cortex_token: &str,
+        query: serde_json::Value,
+        order_by: serde_json::Value,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> CortexResult<(Vec<SubjectInfo>, u32)> {
+        let request = QuerySubjectsRequest {
+            query,
+            order_by,
+            limit,
+            offset,
+        };
+        self.query_subjects_with(cortex_token, &request).await
     }
 
     /// Get the list of valid demographic attributes.
@@ -1810,14 +2172,14 @@ impl CortexClient {
         cortex_token: &str,
         session_id: &str,
     ) -> CortexResult<serde_json::Value> {
-        self.mental_command_training_threshold_with_params(
-            cortex_token,
-            Some(session_id),
-            None,
-            None,
-            None,
-        )
-        .await
+        let request = MentalCommandTrainingThresholdRequest {
+            session_id: Some(session_id.to_string()),
+            profile: None,
+            status: None,
+            value: None,
+        };
+        self.mental_command_training_threshold_with_request(cortex_token, &request)
+            .await
     }
 
     /// Get or set the mental command training threshold for a profile.
@@ -1831,14 +2193,32 @@ impl CortexClient {
         status: Option<&str>,
         value: Option<f64>,
     ) -> CortexResult<serde_json::Value> {
-        self.mental_command_training_threshold_with_params(
-            cortex_token,
-            None,
-            Some(profile),
-            status,
+        let request = MentalCommandTrainingThresholdRequest {
+            session_id: None,
+            profile: Some(profile.to_string()),
+            status: status.map(ToString::to_string),
             value,
-        )
-        .await
+        };
+        self.mental_command_training_threshold_with_request(cortex_token, &request)
+            .await
+    }
+
+    /// Get or set the mental command training threshold using a typed request.
+    pub async fn mental_command_training_threshold_with_request(
+        &self,
+        cortex_token: &str,
+        request: &MentalCommandTrainingThresholdRequest,
+    ) -> CortexResult<serde_json::Value> {
+        let params = Self::mental_command_training_threshold_params(
+            cortex_token,
+            request.session_id.as_deref(),
+            request.profile.as_deref(),
+            request.status.as_deref(),
+            request.value,
+        )?;
+
+        self.call(Methods::MENTAL_COMMAND_TRAINING_THRESHOLD, params)
+            .await
     }
 
     /// Get or set the mental command training threshold using either session
@@ -1847,6 +2227,9 @@ impl CortexClient {
     /// Exactly one of `session_id` or `profile` must be provided.
     /// If `status` is `None`, this infers `"get"` when `value` is `None`,
     /// otherwise `"set"`.
+    #[deprecated(
+        note = "Use `mental_command_training_threshold_with_request` and `MentalCommandTrainingThresholdRequest` instead."
+    )]
     pub async fn mental_command_training_threshold_with_params(
         &self,
         cortex_token: &str,
@@ -1855,15 +2238,13 @@ impl CortexClient {
         status: Option<&str>,
         value: Option<f64>,
     ) -> CortexResult<serde_json::Value> {
-        let params = Self::mental_command_training_threshold_params(
-            cortex_token,
-            session_id,
-            profile,
-            status,
+        let request = MentalCommandTrainingThresholdRequest {
+            session_id: session_id.map(ToString::to_string),
+            profile: profile.map(ToString::to_string),
+            status: status.map(ToString::to_string),
             value,
-        )?;
-
-        self.call(Methods::MENTAL_COMMAND_TRAINING_THRESHOLD, params)
+        };
+        self.mental_command_training_threshold_with_request(cortex_token, &request)
             .await
     }
 
@@ -1925,6 +2306,25 @@ impl CortexClient {
     ///
     /// Use `status: "get"` to query, `status: "set"` with `signature` to change.
     /// Specify either `profile` or `session`, not both.
+    pub async fn facial_expression_signature_type_with(
+        &self,
+        cortex_token: &str,
+        request: &FacialExpressionSignatureTypeRequest,
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::FACIAL_EXPRESSION_SIGNATURE_TYPE,
+            Self::facial_expression_signature_type_params(cortex_token, request),
+        )
+        .await
+    }
+
+    /// Get or set the facial expression signature type.
+    ///
+    /// Use `status: "get"` to query, `status: "set"` with `signature` to change.
+    /// Specify either `profile` or `session`, not both.
+    #[deprecated(
+        note = "Use `facial_expression_signature_type_with` and `FacialExpressionSignatureTypeRequest` instead."
+    )]
     pub async fn facial_expression_signature_type(
         &self,
         cortex_token: &str,
@@ -1933,22 +2333,13 @@ impl CortexClient {
         session: Option<&str>,
         signature: Option<&str>,
     ) -> CortexResult<serde_json::Value> {
-        let mut params = serde_json::json!({
-            "cortexToken": cortex_token,
-            "status": status,
-        });
-
-        if let Some(p) = profile {
-            params["profile"] = serde_json::json!(p);
-        }
-        if let Some(s) = session {
-            params["session"] = serde_json::json!(s);
-        }
-        if let Some(sig) = signature {
-            params["signature"] = serde_json::json!(sig);
-        }
-
-        self.call(Methods::FACIAL_EXPRESSION_SIGNATURE_TYPE, params)
+        let request = FacialExpressionSignatureTypeRequest {
+            status: status.to_string(),
+            profile: profile.map(ToString::to_string),
+            session: session.map(ToString::to_string),
+            signature: signature.map(ToString::to_string),
+        };
+        self.facial_expression_signature_type_with(cortex_token, &request)
             .await
     }
 
@@ -1957,6 +2348,26 @@ impl CortexClient {
     /// Use `status: "get"` to query, `status: "set"` with `value` to change.
     /// Specify either `profile` or `session`, not both.
     /// The `value` range is 0–1000.
+    pub async fn facial_expression_threshold_with(
+        &self,
+        cortex_token: &str,
+        request: &FacialExpressionThresholdRequest,
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::FACIAL_EXPRESSION_THRESHOLD,
+            Self::facial_expression_threshold_params(cortex_token, request),
+        )
+        .await
+    }
+
+    /// Get or set the threshold of a facial expression action.
+    ///
+    /// Use `status: "get"` to query, `status: "set"` with `value` to change.
+    /// Specify either `profile` or `session`, not both.
+    /// The `value` range is 0–1000.
+    #[deprecated(
+        note = "Use `facial_expression_threshold_with` and `FacialExpressionThresholdRequest` instead."
+    )]
     pub async fn facial_expression_threshold(
         &self,
         cortex_token: &str,
@@ -1966,23 +2377,14 @@ impl CortexClient {
         session: Option<&str>,
         value: Option<u32>,
     ) -> CortexResult<serde_json::Value> {
-        let mut params = serde_json::json!({
-            "cortexToken": cortex_token,
-            "status": status,
-            "action": action,
-        });
-
-        if let Some(p) = profile {
-            params["profile"] = serde_json::json!(p);
-        }
-        if let Some(s) = session {
-            params["session"] = serde_json::json!(s);
-        }
-        if let Some(v) = value {
-            params["value"] = serde_json::json!(v);
-        }
-
-        self.call(Methods::FACIAL_EXPRESSION_THRESHOLD, params)
+        let request = FacialExpressionThresholdRequest {
+            status: status.to_string(),
+            action: action.to_string(),
+            profile: profile.map(ToString::to_string),
+            session: session.map(ToString::to_string),
+            value,
+        };
+        self.facial_expression_threshold_with(cortex_token, &request)
             .await
     }
 
@@ -1996,6 +2398,7 @@ impl CortexClient {
     /// Stop the reader loop.
     pub async fn stop_reader(&mut self) {
         self.reader_running.store(false, Ordering::SeqCst);
+        let _ = self.reader_shutdown.send(true);
         if let Some(handle) = self.reader_handle.take() {
             let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
         }
@@ -2078,8 +2481,7 @@ mod tests {
 
     #[test]
     fn test_update_headset_custom_info_omits_optional_fields_when_none() {
-        let params =
-            CortexClient::update_headset_custom_info_params("token", "HS-123", None, None);
+        let params = CortexClient::update_headset_custom_info_params("token", "HS-123", None, None);
         assert_eq!(params["headsetId"], "HS-123");
         assert_eq!(params["headset"], "HS-123");
         assert!(params.get("headbandPosition").is_none());
@@ -2195,7 +2597,10 @@ mod tests {
                 mappings: Some(serde_json::json!(["bad-shape"])),
             },
         );
-        assert!(matches!(invalid_mappings, Err(CortexError::ProtocolError { .. })));
+        assert!(matches!(
+            invalid_mappings,
+            Err(CortexError::ProtocolError { .. })
+        ));
     }
 
     #[test]

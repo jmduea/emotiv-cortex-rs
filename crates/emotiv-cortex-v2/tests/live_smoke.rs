@@ -1,4 +1,4 @@
-use emotiv_cortex_v2::protocol::QueryHeadsetsOptions;
+use emotiv_cortex_v2::protocol::headset::QueryHeadsetsOptions;
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
 fn live_test_config() -> Result<CortexConfig, String> {
@@ -9,8 +9,8 @@ fn live_test_config() -> Result<CortexConfig, String> {
         return Err("EMOTIV_SKIP_LIVE_TESTS is enabled".to_string());
     }
 
-    let client_id = std::env::var("EMOTIV_CLIENT_ID")
-        .map_err(|_| "EMOTIV_CLIENT_ID is not set".to_string())?;
+    let client_id =
+        std::env::var("EMOTIV_CLIENT_ID").map_err(|_| "EMOTIV_CLIENT_ID is not set".to_string())?;
     let client_secret = std::env::var("EMOTIV_CLIENT_SECRET")
         .map_err(|_| "EMOTIV_CLIENT_SECRET is not set".to_string())?;
 
