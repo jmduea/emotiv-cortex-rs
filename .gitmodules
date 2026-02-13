@@ -1,0 +1,3 @@
+[submodule ".rust-skills"]
+	path = .rust-skills
+	url = https://github.com/ZhangHanDong/rust-skills.git
