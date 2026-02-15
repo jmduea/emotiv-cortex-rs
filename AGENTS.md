@@ -121,6 +121,12 @@ For detailed guidance, see:
 - `skills/m06-error-handling/SKILL.md` - Error patterns
 - `skills/m07-concurrency/SKILL.md` - Concurrency patterns
 
+### Python Command Policy
+
+- Use `uv` for all Python execution and tooling commands.
+- Do not use bare `python` commands in docs, scripts, or automation.
+- Prefer forms such as `uv run --project python ...` (or `uv python --command ...` when needed).
+
 ## RTK Command Policy
 
 - Prefer `rtk` as the default proxy for verbose shell commands.
