@@ -67,12 +67,14 @@ pub enum RetryPolicy {
 impl RetryPolicy {
     /// No retries. Use for non-idempotent operations like `authorize`,
     /// `createSession`, `createRecord`, `injectMarker`.
+    #[must_use]
     pub fn none() -> Self {
         Self::None
     }
 
     /// 3 retries with 500ms base delay. Use for idempotent query operations
     /// like `getCortexInfo`, `queryHeadsets`, `querySessions`, `queryRecords`.
+    #[must_use]
     pub fn query() -> Self {
         Self::Backoff {
             max_retries: 3,
@@ -84,6 +86,7 @@ impl RetryPolicy {
     /// 2 retries with 1s base delay. Use for idempotent state-changing
     /// operations like `controlDevice`, `subscribe`, `unsubscribe`,
     /// `setupProfile(load)`.
+    #[must_use]
     pub fn idempotent() -> Self {
         Self::Backoff {
             max_retries: 2,
@@ -94,6 +97,7 @@ impl RetryPolicy {
 
     /// 2 retries with 1s base delay. Use for idempotent stopping operations
     /// like `updateSession(close)`, `updateRecord(stop)`.
+    #[must_use]
     pub fn stop() -> Self {
         Self::Backoff {
             max_retries: 2,
@@ -103,6 +107,7 @@ impl RetryPolicy {
     }
 
     /// Custom backoff policy.
+    #[must_use]
     pub fn custom(max_retries: u32, base_delay: Duration, max_delay: Duration) -> Self {
         Self::Backoff {
             max_retries,
@@ -120,6 +125,10 @@ impl RetryPolicy {
 ///
 /// On exhaustion, returns [`CortexError::RetriesExhausted`] wrapping
 /// the last error encountered.
+///
+/// # Errors
+/// Returns any error from the operation, including a wrapped
+/// [`CortexError::RetriesExhausted`] when retry attempts are exhausted.
 pub async fn with_retry<F, Fut, T>(policy: &RetryPolicy, mut operation: F) -> CortexResult<T>
 where
     F: FnMut() -> Fut,
@@ -155,7 +164,7 @@ where
                             attempt = attempt + 1,
                             max = max_retries + 1,
                             error = %e,
-                            delay_ms = delay.as_millis() as u64,
+                            delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
                             "Retrying after transient error"
                         );
 
@@ -231,7 +240,7 @@ mod tests {
 
         match result.unwrap_err() {
             CortexError::RetriesExhausted { attempts: a, .. } => assert_eq!(a, 3),
-            other => panic!("Expected RetriesExhausted, got {:?}", other),
+            other => panic!("Expected RetriesExhausted, got {other:?}"),
         }
         assert_eq!(attempts.load(Ordering::SeqCst), 3); // initial + 2 retries
     }

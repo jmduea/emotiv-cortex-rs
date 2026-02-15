@@ -54,6 +54,7 @@ pub enum ProfileAction {
 
 impl ProfileAction {
     /// Returns the Cortex API string for this action.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             ProfileAction::Create => "create",

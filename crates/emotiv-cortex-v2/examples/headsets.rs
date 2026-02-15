@@ -21,7 +21,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Trigger a Bluetooth scan
     println!("Scanning for headsets...");
     if let Err(e) = client.refresh_headsets().await {
-        println!("  (refresh warning: {})", e);
+        println!("  (refresh warning: {e})");
     }
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let model = HeadsetModel::from_headset_info(h);
             let config = model.channel_config();
             println!("  {} ({}):", h.id, h.status);
-            println!("    Model:       {}", model);
+            println!("    Model:       {model}");
             println!(
                 "    Channels:    {} ({})",
                 model.num_channels(),
@@ -46,7 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             println!("    Sample rate: {} Hz", config.sampling_rate_hz);
             if let Some(fw) = &h.firmware {
-                println!("    Firmware:    {}", fw);
+                println!("    Firmware:    {fw}");
             }
         }
     }

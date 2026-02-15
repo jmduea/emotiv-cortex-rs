@@ -40,7 +40,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .inject_marker(
                 &token,
                 &session.id,
-                &format!("event_{}", i),
+                &format!("event_{i}"),
                 i,
                 "emotiv-cortex-v2-example",
                 None,

@@ -104,6 +104,7 @@ impl HeadsetModel {
     /// assert_eq!(HeadsetModel::from_headset_id("EPOCX-AABBCCDD"), HeadsetModel::EpocX);
     /// assert_eq!(HeadsetModel::from_headset_id("EPOCPLUS-99887766"), HeadsetModel::EpocPlus);
     /// ```
+    #[must_use]
     pub fn from_headset_id(headset_id: &str) -> Self {
         let id_upper = headset_id.to_uppercase();
 
@@ -113,9 +114,10 @@ impl HeadsetModel {
             HeadsetModel::EpocX
         } else if id_upper.starts_with("EPOCFLEX") {
             HeadsetModel::EpocFlex
-        } else if id_upper.starts_with("EPOCPLUS") || id_upper.starts_with("EPOC+") {
-            HeadsetModel::EpocPlus
-        } else if id_upper.starts_with("EPOC") {
+        } else if id_upper.starts_with("EPOCPLUS")
+            || id_upper.starts_with("EPOC+")
+            || id_upper.starts_with("EPOC")
+        {
             // Generic EPOC — assume EPOC+ layout
             HeadsetModel::EpocPlus
         } else {
@@ -124,17 +126,18 @@ impl HeadsetModel {
     }
 
     /// Infer the headset model from a [`HeadsetInfo`] response.
+    #[must_use]
     pub fn from_headset_info(info: &HeadsetInfo) -> Self {
         Self::from_headset_id(&info.id)
     }
 
     /// Get the standard EEG channel configuration for this headset model.
+    #[must_use]
     pub fn channel_config(&self) -> HeadsetChannelConfig {
         let (names, rate): (&[&str], f64) = match self {
-            HeadsetModel::Insight => (INSIGHT_CHANNELS, 128.0),
+            HeadsetModel::Insight | HeadsetModel::Unknown(_) => (INSIGHT_CHANNELS, 128.0),
             HeadsetModel::EpocPlus | HeadsetModel::EpocFlex => (EPOC_CHANNELS, 128.0),
             HeadsetModel::EpocX => (EPOC_CHANNELS, 256.0),
-            HeadsetModel::Unknown(_) => (INSIGHT_CHANNELS, 128.0),
         };
 
         HeadsetChannelConfig {
@@ -151,6 +154,7 @@ impl HeadsetModel {
     }
 
     /// Number of EEG channels for this headset model.
+    #[must_use]
     pub fn num_channels(&self) -> usize {
         match self {
             HeadsetModel::Insight | HeadsetModel::Unknown(_) => INSIGHT_CHANNELS.len(),
@@ -161,6 +165,7 @@ impl HeadsetModel {
     }
 
     /// Sampling rate in Hz for this headset model.
+    #[must_use]
     pub fn sampling_rate_hz(&self) -> f64 {
         match self {
             HeadsetModel::EpocX => 256.0,
@@ -169,6 +174,7 @@ impl HeadsetModel {
     }
 
     /// Channel names for this headset model.
+    #[must_use]
     pub fn channel_names(&self) -> &[&str] {
         match self {
             HeadsetModel::Insight | HeadsetModel::Unknown(_) => INSIGHT_CHANNELS,
@@ -184,7 +190,7 @@ impl std::fmt::Display for HeadsetModel {
             HeadsetModel::EpocPlus => write!(f, "Emotiv EPOC+"),
             HeadsetModel::EpocX => write!(f, "Emotiv EPOC X"),
             HeadsetModel::EpocFlex => write!(f, "Emotiv EPOC Flex"),
-            HeadsetModel::Unknown(id) => write!(f, "Unknown Emotiv ({})", id),
+            HeadsetModel::Unknown(id) => write!(f, "Unknown Emotiv ({id})"),
         }
     }
 }

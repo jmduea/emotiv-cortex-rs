@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let channels: Vec<String> = eeg_data
                 .channels
                 .iter()
-                .map(|v| format!("{:.2}", v))
+                .map(|v| format!("{v:.2}"))
                 .collect();
             println!(
                 "[sample {}] EEG: [{}]",

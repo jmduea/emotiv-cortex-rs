@@ -13,6 +13,7 @@ pub enum DetectionType {
 
 impl DetectionType {
     /// Returns the Cortex API string for this detection type.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             DetectionType::MentalCommand => "mentalCommand",
@@ -38,6 +39,7 @@ pub enum TrainingStatus {
 
 impl TrainingStatus {
     /// Returns the Cortex API string for this status.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             TrainingStatus::Start => "start",

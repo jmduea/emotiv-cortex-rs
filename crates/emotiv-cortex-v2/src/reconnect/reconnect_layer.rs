@@ -140,10 +140,8 @@ impl ResilientClient {
             }
 
             if attempt < max_attempts {
-                tracing::debug!(
-                    delay_ms = delay.as_millis() as u64,
-                    "Backing off before retry"
-                );
+                let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+                tracing::debug!(delay_ms, "Backing off before retry");
                 tokio::time::sleep(delay).await;
                 delay = std::cmp::min(delay * 2, max_delay);
             }
@@ -179,6 +177,9 @@ impl ResilientClient {
     ///
     /// Stops the health monitor and drops the connection. The
     /// `ResilientClient` cannot be used after this call.
+    ///
+    /// # Errors
+    /// Returns any error produced by shutting down background health monitoring.
     pub async fn disconnect(self) -> CortexResult<()> {
         // Take the monitor out of the mutex, then drop the guard before awaiting
         let monitor = self
@@ -204,7 +205,7 @@ impl ResilientClient {
 /// Guard that resets the reconnecting flag when dropped.
 struct ReconnectGuard<'a>(&'a AtomicBool);
 
-impl<'a> Drop for ReconnectGuard<'a> {
+impl Drop for ReconnectGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }

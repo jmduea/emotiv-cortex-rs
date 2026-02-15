@@ -31,7 +31,7 @@ pub enum CortexError {
     NotConnected,
 
     // ─── Authentication ─────────────────────────────────────────────
-    /// Authentication failed (invalid client_id/client_secret or expired token).
+    /// Authentication failed (invalid `client_id/client_secret` or expired token).
     #[error(
         "Authentication failed: {reason}. Check your client_id and client_secret from the Emotiv Developer Portal."
     )]
@@ -45,7 +45,7 @@ pub enum CortexError {
     #[error("Access denied: {reason}. Approve the application in the EMOTIV Launcher.")]
     AccessDenied { reason: String },
 
-    /// User is not logged in to EmotivID in the Launcher.
+    /// User is not logged in to `EmotivID` in the Launcher.
     #[error("User not logged in to EmotivID. Open the EMOTIV Launcher and sign in.")]
     UserNotLoggedIn,
 
@@ -163,16 +163,12 @@ impl CortexError {
             -32601 => CortexError::MethodNotFound {
                 method: message.clone(),
             },
-            -32001 => CortexError::NoHeadsetFound,
-            -32002 => CortexError::LicenseError { reason: message },
-            -32004 => CortexError::NoHeadsetFound,
-            -32005 => CortexError::SessionError { reason: message },
-            -32012 => CortexError::SessionError { reason: message },
-            -32014 => CortexError::AuthenticationFailed { reason: message },
+            -32001 | -32004 => CortexError::NoHeadsetFound,
+            -32002 | -32024 => CortexError::LicenseError { reason: message },
+            -32005 | -32012 => CortexError::SessionError { reason: message },
+            -32014 | -32021 => CortexError::AuthenticationFailed { reason: message },
             -32015 => CortexError::TokenExpired,
             -32016 => CortexError::StreamError { reason: message },
-            -32021 => CortexError::AuthenticationFailed { reason: message },
-            -32024 => CortexError::LicenseError { reason: message },
             -32033 => CortexError::UserNotLoggedIn,
             -32142 => CortexError::NotApproved,
             -32152 => CortexError::HeadsetError { reason: message },
@@ -184,6 +180,7 @@ impl CortexError {
     }
 
     /// Returns `true` if this error is transient and the operation can be retried.
+    #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(
             self,
@@ -196,6 +193,7 @@ impl CortexError {
 
     /// Returns `true` if this error indicates the connection is dead
     /// and a reconnect is needed.
+    #[must_use]
     pub fn is_connection_error(&self) -> bool {
         matches!(
             self,

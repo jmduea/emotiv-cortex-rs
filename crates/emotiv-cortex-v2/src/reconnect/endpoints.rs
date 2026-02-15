@@ -22,12 +22,20 @@ impl ResilientClient {
     // ─── Authentication ─────────────────────────────────────────────────
 
     /// Query Cortex service info. No authentication required.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn get_cortex_info(&self) -> CortexResult<serde_json::Value> {
         self.exec(|c| async move { c.get_cortex_info().await })
             .await
     }
 
     /// Check if the application has access rights.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn has_access_right(&self) -> CortexResult<bool> {
         let client_id = self.config.client_id.clone();
         let client_secret = self.config.client_secret.clone();
@@ -40,17 +48,29 @@ impl ResilientClient {
     }
 
     /// Get the currently logged-in Emotiv user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn get_user_login(&self) -> CortexResult<Vec<UserLoginInfo>> {
         self.exec(|c| async move { c.get_user_login().await }).await
     }
 
     /// Get information about the current user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn get_user_info(&self) -> CortexResult<serde_json::Value> {
         self.exec_with_token(|c, token| async move { c.get_user_info(&token).await })
             .await
     }
 
     /// Get information about the license used by the application.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn get_license_info(&self) -> CortexResult<serde_json::Value> {
         self.exec_with_token(|c, token| async move { c.get_license_info(&token).await })
             .await
@@ -59,6 +79,10 @@ impl ResilientClient {
     // ─── Headset Management ─────────────────────────────────────────────
 
     /// Query available headsets.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_headsets(
         &self,
         options: QueryHeadsetsOptions,
@@ -71,6 +95,10 @@ impl ResilientClient {
     }
 
     /// Connect to a headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn connect_headset(&self, headset_id: &str) -> CortexResult<()> {
         let id = headset_id.to_string();
         self.exec(move |c| {
@@ -81,6 +109,10 @@ impl ResilientClient {
     }
 
     /// Disconnect a headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn disconnect_headset(&self, headset_id: &str) -> CortexResult<()> {
         let id = headset_id.to_string();
         self.exec(move |c| {
@@ -91,12 +123,20 @@ impl ResilientClient {
     }
 
     /// Trigger headset scanning / refresh.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn refresh_headsets(&self) -> CortexResult<()> {
         self.exec(|c| async move { c.refresh_headsets().await })
             .await
     }
 
     /// Synchronize system clock with headset clock.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn sync_with_headset_clock(
         &self,
         headset_id: &str,
@@ -110,6 +150,10 @@ impl ResilientClient {
     }
 
     /// Manage EEG channel mapping configurations for an EPOC Flex headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn config_mapping(
         &self,
         request: ConfigMappingRequest,
@@ -122,6 +166,10 @@ impl ResilientClient {
     }
 
     /// Update settings of an EPOC+ or EPOC X headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_headset(
         &self,
         headset_id: &str,
@@ -137,6 +185,10 @@ impl ResilientClient {
     }
 
     /// Update the headband position or custom name of an EPOC X headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_headset_custom_info(
         &self,
         headset_id: &str,
@@ -144,8 +196,8 @@ impl ResilientClient {
         custom_name: Option<&str>,
     ) -> CortexResult<serde_json::Value> {
         let id = headset_id.to_string();
-        let pos = headband_position.map(|s| s.to_string());
-        let name = custom_name.map(|s| s.to_string());
+        let pos = headband_position.map(std::string::ToString::to_string);
+        let name = custom_name.map(std::string::ToString::to_string);
         self.exec_with_token(move |c, token| {
             let id = id.clone();
             let pos = pos.clone();
@@ -161,6 +213,10 @@ impl ResilientClient {
     // ─── Session Management ─────────────────────────────────────────────
 
     /// Create a session for a headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn create_session(&self, headset_id: &str) -> CortexResult<SessionInfo> {
         let id = headset_id.to_string();
         self.exec_with_token(move |c, token| {
@@ -171,12 +227,20 @@ impl ResilientClient {
     }
 
     /// Query existing sessions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn query_sessions(&self) -> CortexResult<Vec<SessionInfo>> {
         self.exec_with_token(|c, token| async move { c.query_sessions(&token).await })
             .await
     }
 
     /// Close a session.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn close_session(&self, session_id: &str) -> CortexResult<()> {
         let id = session_id.to_string();
         self.exec_with_token(move |c, token| {
@@ -197,14 +261,21 @@ impl ResilientClient {
     }
 
     /// Subscribe to data streams.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn subscribe_streams(&self, session_id: &str, streams: &[&str]) -> CortexResult<()> {
         let sid = session_id.to_string();
-        let stream_names: Vec<String> = streams.iter().map(|s| s.to_string()).collect();
+        let stream_names: Vec<String> = streams
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         self.exec_with_token(move |c, token| {
             let sid = sid.clone();
             let names = stream_names.clone();
             async move {
-                let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                let refs: Vec<&str> = names.iter().map(std::string::String::as_str).collect();
                 c.subscribe_streams(&token, &sid, &refs).await
             }
         })
@@ -212,18 +283,25 @@ impl ResilientClient {
     }
 
     /// Unsubscribe from data streams.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn unsubscribe_streams(
         &self,
         session_id: &str,
         streams: &[&str],
     ) -> CortexResult<()> {
         let sid = session_id.to_string();
-        let stream_names: Vec<String> = streams.iter().map(|s| s.to_string()).collect();
+        let stream_names: Vec<String> = streams
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         self.exec_with_token(move |c, token| {
             let sid = sid.clone();
             let names = stream_names.clone();
             async move {
-                let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+                let refs: Vec<&str> = names.iter().map(std::string::String::as_str).collect();
                 c.unsubscribe_streams(&token, &sid, &refs).await
             }
         })
@@ -233,6 +311,10 @@ impl ResilientClient {
     // ─── Records ────────────────────────────────────────────────────────
 
     /// Start a new recording.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn create_record(&self, session_id: &str, title: &str) -> CortexResult<RecordInfo> {
         let sid = session_id.to_string();
         let t = title.to_string();
@@ -245,6 +327,10 @@ impl ResilientClient {
     }
 
     /// Stop an active recording.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn stop_record(&self, session_id: &str) -> CortexResult<RecordInfo> {
         let sid = session_id.to_string();
         self.exec_with_token(move |c, token| {
@@ -255,6 +341,10 @@ impl ResilientClient {
     }
 
     /// Query recorded sessions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_records(
         &self,
         limit: Option<u32>,
@@ -267,6 +357,10 @@ impl ResilientClient {
     }
 
     /// Export a recording to CSV or EDF format.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn export_record(
         &self,
         record_ids: &[String],
@@ -284,6 +378,10 @@ impl ResilientClient {
     }
 
     /// Update a recording's metadata (title, description, tags).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_record_with(
         &self,
         request: &UpdateRecordRequest,
@@ -298,6 +396,10 @@ impl ResilientClient {
 
     /// Update a recording's metadata (title, description, tags).
     #[deprecated(note = "Use `update_record_with` and `UpdateRecordRequest` instead.")]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_record(
         &self,
         record_id: &str,
@@ -309,12 +411,16 @@ impl ResilientClient {
             record_id: record_id.to_string(),
             title: title.map(ToString::to_string),
             description: description.map(ToString::to_string),
-            tags: tags.map(|values| values.to_vec()),
+            tags: tags.map(<[std::string::String]>::to_vec),
         };
         self.update_record_with(&request).await
     }
 
     /// Delete one or more recordings.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn delete_record(&self, record_ids: &[String]) -> CortexResult<serde_json::Value> {
         let ids = record_ids.to_vec();
         self.exec_with_token(move |c, token| {
@@ -325,6 +431,10 @@ impl ResilientClient {
     }
 
     /// Get detailed information for specific records by their IDs.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn get_record_infos(&self, record_ids: &[String]) -> CortexResult<serde_json::Value> {
         let ids = record_ids.to_vec();
         self.exec_with_token(move |c, token| {
@@ -335,6 +445,10 @@ impl ResilientClient {
     }
 
     /// Configure the opt-out setting for data sharing.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn config_opt_out(
         &self,
         status: &str,
@@ -349,6 +463,10 @@ impl ResilientClient {
     }
 
     /// Request to download recorded data from the Emotiv cloud.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn download_record(&self, record_ids: &[String]) -> CortexResult<serde_json::Value> {
         let ids = record_ids.to_vec();
         self.exec_with_token(move |c, token| {
@@ -361,6 +479,10 @@ impl ResilientClient {
     // ─── Markers ────────────────────────────────────────────────────────
 
     /// Inject a time-stamped marker.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn inject_marker(
         &self,
         session_id: &str,
@@ -382,6 +504,10 @@ impl ResilientClient {
     }
 
     /// Update a marker (convert instance to interval marker).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_marker(
         &self,
         session_id: &str,
@@ -401,6 +527,10 @@ impl ResilientClient {
     // ─── Subjects ────────────────────────────────────────────────────────
 
     /// Create a new subject.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn create_subject_with(&self, request: &SubjectRequest) -> CortexResult<SubjectInfo> {
         let request = request.clone();
         self.exec_with_token(move |c, token| {
@@ -413,6 +543,10 @@ impl ResilientClient {
     /// Create a new subject.
     #[deprecated(note = "Use `create_subject_with` and `SubjectRequest` instead.")]
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn create_subject(
         &self,
         subject_name: &str,
@@ -430,12 +564,16 @@ impl ResilientClient {
             country_code: country_code.map(ToString::to_string),
             state: state.map(ToString::to_string),
             city: city.map(ToString::to_string),
-            attributes: attributes.map(|values| values.to_vec()),
+            attributes: attributes.map(<[serde_json::Value]>::to_vec),
         };
         self.create_subject_with(&request).await
     }
 
     /// Update an existing subject's information.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn update_subject_with(&self, request: &SubjectRequest) -> CortexResult<SubjectInfo> {
         let request = request.clone();
         self.exec_with_token(move |c, token| {
@@ -448,6 +586,10 @@ impl ResilientClient {
     /// Update an existing subject's information.
     #[deprecated(note = "Use `update_subject_with` and `SubjectRequest` instead.")]
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_subject(
         &self,
         subject_name: &str,
@@ -465,12 +607,16 @@ impl ResilientClient {
             country_code: country_code.map(ToString::to_string),
             state: state.map(ToString::to_string),
             city: city.map(ToString::to_string),
-            attributes: attributes.map(|values| values.to_vec()),
+            attributes: attributes.map(<[serde_json::Value]>::to_vec),
         };
         self.update_subject_with(&request).await
     }
 
     /// Delete one or more subjects.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn delete_subjects(
         &self,
         subject_names: &[String],
@@ -484,6 +630,10 @@ impl ResilientClient {
     }
 
     /// Query subjects with filtering, sorting, and pagination.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_subjects_with(
         &self,
         request: &QuerySubjectsRequest,
@@ -498,6 +648,10 @@ impl ResilientClient {
 
     /// Query subjects with filtering, sorting, and pagination.
     #[deprecated(note = "Use `query_subjects_with` and `QuerySubjectsRequest` instead.")]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_subjects(
         &self,
         query: serde_json::Value,
@@ -515,6 +669,10 @@ impl ResilientClient {
     }
 
     /// Get the list of valid demographic attributes.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn get_demographic_attributes(&self) -> CortexResult<Vec<DemographicAttribute>> {
         self.exec_with_token(|c, token| async move { c.get_demographic_attributes(&token).await })
             .await
@@ -523,12 +681,20 @@ impl ResilientClient {
     // ─── Profiles ───────────────────────────────────────────────────────
 
     /// List all profiles for the current user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn query_profiles(&self) -> CortexResult<Vec<ProfileInfo>> {
         self.exec_with_token(|c, token| async move { c.query_profiles(&token).await })
             .await
     }
 
     /// Get the profile currently loaded for a headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn get_current_profile(&self, headset_id: &str) -> CortexResult<CurrentProfileInfo> {
         let id = headset_id.to_string();
         self.exec_with_token(move |c, token| {
@@ -539,6 +705,10 @@ impl ResilientClient {
     }
 
     /// Manage a profile (create, load, unload, save, rename, delete).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn setup_profile(
         &self,
         headset_id: &str,
@@ -556,6 +726,10 @@ impl ResilientClient {
     }
 
     /// Load an empty guest profile for a headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, and timeout errors.
     pub async fn load_guest_profile(&self, headset_id: &str) -> CortexResult<()> {
         let id = headset_id.to_string();
         self.exec_with_token(move |c, token| {
@@ -568,6 +742,10 @@ impl ResilientClient {
     // ─── BCI / Training ─────────────────────────────────────────────────
 
     /// Get detection info for a detection type.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_detection_info(
         &self,
         detection: DetectionType,
@@ -577,6 +755,10 @@ impl ResilientClient {
     }
 
     /// Control the training lifecycle.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn training(
         &self,
         session_id: &str,
@@ -595,6 +777,10 @@ impl ResilientClient {
     }
 
     /// Get or set active mental command actions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_active_action(
         &self,
         session_id: &str,
@@ -602,14 +788,14 @@ impl ResilientClient {
     ) -> CortexResult<serde_json::Value> {
         let sid = session_id.to_string();
         let owned_actions: Option<Vec<String>> =
-            actions.map(|a| a.iter().map(|s| s.to_string()).collect());
+            actions.map(|a| a.iter().map(std::string::ToString::to_string).collect());
         self.exec_with_token(move |c, token| {
             let sid = sid.clone();
             let owned_actions = owned_actions.clone();
             async move {
                 let refs: Option<Vec<&str>> = owned_actions
                     .as_ref()
-                    .map(|v| v.iter().map(|s| s.as_str()).collect());
+                    .map(|v| v.iter().map(std::string::String::as_str).collect());
                 c.mental_command_active_action(&token, &sid, refs.as_deref())
                     .await
             }
@@ -618,13 +804,17 @@ impl ResilientClient {
     }
 
     /// Get or set the mental command action sensitivity.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_action_sensitivity(
         &self,
         session_id: &str,
         values: Option<&[i32]>,
     ) -> CortexResult<serde_json::Value> {
         let sid = session_id.to_string();
-        let owned_values: Option<Vec<i32>> = values.map(|v| v.to_vec());
+        let owned_values: Option<Vec<i32>> = values.map(<[i32]>::to_vec);
         self.exec_with_token(move |c, token| {
             let sid = sid.clone();
             let owned_values = owned_values.clone();
@@ -637,6 +827,10 @@ impl ResilientClient {
     }
 
     /// Get the mental command brain map.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_brain_map(
         &self,
         session_id: &str,
@@ -650,6 +844,10 @@ impl ResilientClient {
     }
 
     /// Get or set the mental command training threshold.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_training_threshold(
         &self,
         session_id: &str,
@@ -663,6 +861,10 @@ impl ResilientClient {
     }
 
     /// Get or set the mental command training threshold for a profile.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_training_threshold_for_profile(
         &self,
         profile: &str,
@@ -670,7 +872,7 @@ impl ResilientClient {
         value: Option<f64>,
     ) -> CortexResult<serde_json::Value> {
         let profile_name = profile.to_string();
-        let st = status.map(|s| s.to_string());
+        let st = status.map(std::string::ToString::to_string);
         self.exec_with_token(move |c, token| {
             let profile_name = profile_name.clone();
             let st = st.clone();
@@ -688,6 +890,10 @@ impl ResilientClient {
     }
 
     /// Get or set the mental command training threshold with a typed request.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_training_threshold_with_request(
         &self,
         request: &MentalCommandTrainingThresholdRequest,
@@ -705,6 +911,10 @@ impl ResilientClient {
 
     /// Get or set the mental command training threshold with explicit
     /// session/profile targeting.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     #[deprecated(
         note = "Use `mental_command_training_threshold_with_request` and `MentalCommandTrainingThresholdRequest` instead."
     )]
@@ -726,14 +936,18 @@ impl ResilientClient {
     }
 
     /// Get a list of trained actions for a profile's detection type.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_trained_signature_actions(
         &self,
         detection: DetectionType,
         profile: Option<&str>,
         session: Option<&str>,
     ) -> CortexResult<TrainedSignatureActions> {
-        let p = profile.map(|s| s.to_string());
-        let s = session.map(|s| s.to_string());
+        let p = profile.map(std::string::ToString::to_string);
+        let s = session.map(std::string::ToString::to_string);
         self.exec_with_token(move |c, token| {
             let p = p.clone();
             let s = s.clone();
@@ -746,6 +960,10 @@ impl ResilientClient {
     }
 
     /// Get the duration of a training session.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_training_time(
         &self,
         detection: DetectionType,
@@ -760,6 +978,10 @@ impl ResilientClient {
     }
 
     /// Get or set the facial expression signature type.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn facial_expression_signature_type_with(
         &self,
         request: &FacialExpressionSignatureTypeRequest,
@@ -776,6 +998,10 @@ impl ResilientClient {
     }
 
     /// Get or set the facial expression signature type.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     #[deprecated(
         note = "Use `facial_expression_signature_type_with` and `FacialExpressionSignatureTypeRequest` instead."
     )]
@@ -796,6 +1022,10 @@ impl ResilientClient {
     }
 
     /// Get or set the threshold of a facial expression action.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn facial_expression_threshold_with(
         &self,
         request: &FacialExpressionThresholdRequest,
@@ -809,6 +1039,10 @@ impl ResilientClient {
     }
 
     /// Get or set the threshold of a facial expression action.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     #[deprecated(
         note = "Use `facial_expression_threshold_with` and `FacialExpressionThresholdRequest` instead."
     )]

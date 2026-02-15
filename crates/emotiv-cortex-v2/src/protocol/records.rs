@@ -42,6 +42,7 @@ pub enum ExportFormat {
 
 impl ExportFormat {
     /// Returns the Cortex API string for this format.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             ExportFormat::Csv => "CSV",

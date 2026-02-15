@@ -45,6 +45,10 @@ impl ResilientClient {
     /// Generate a new cortex token (or refresh an existing one).
     ///
     /// On success, also updates the internal token and refresh timestamp.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn generate_new_token(&self) -> CortexResult<String> {
         let client_id = self.config.client_id.clone();
         let client_secret = self.config.client_secret.clone();
@@ -58,7 +62,7 @@ impl ResilientClient {
 
         // Update internal token state
         let mut state = self.state.write().await;
-        state.cortex_token = new_token.clone();
+        state.cortex_token.clone_from(&new_token);
         state.token_obtained_at = Instant::now();
 
         Ok(new_token)

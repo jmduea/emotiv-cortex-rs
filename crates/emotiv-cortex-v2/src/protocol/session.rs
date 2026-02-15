@@ -13,7 +13,7 @@ pub struct SessionInfo {
     /// Session status: "opened", "activated".
     pub status: String,
 
-    /// EmotivID of the user
+    /// `EmotivID` of the user
     pub owner: String,
 
     /// Id of license used by the session

@@ -8,6 +8,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CLIPPY_WARNINGS_V2_MAX: "0"
+  CLIPPY_WARNINGS_CLI_MAX: "0"
+  COVERAGE_MIN_LINES: "53"
 
 jobs:
   quality:
@@ -21,19 +24,39 @@ jobs:
       - name: Rustfmt check
         run: cargo fmt --all --check
 
-      - name: Clippy gate (v2 rustls)
-        run: >
-          cargo clippy -p emotiv-cortex-v2 --lib
-          --no-default-features --features rustls-tls,config-toml
-          -- -D clippy::unwrap_used -D clippy::expect_used
-          -D clippy::panic -D clippy::todo -D clippy::unimplemented
+      - name: Clippy gate (v2 rustls + warning budget)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy -p emotiv-cortex-v2 --lib \
+            --no-default-features --features rustls-tls,config-toml \
+            -- -D clippy::unwrap_used -D clippy::expect_used \
+            -D clippy::panic -D clippy::todo -D clippy::unimplemented \
+            2>&1 | tee clippy-v2.txt
 
-      - name: Clippy gate (CLI no default features)
-        run: >
-          cargo clippy -p emotiv-cortex-cli --bin emotiv-cortex-cli
-          --no-default-features
-          -- -D clippy::unwrap_used -D clippy::expect_used
-          -D clippy::panic -D clippy::todo -D clippy::unimplemented
+          warning_count=$(grep -cE '^warning(\[[^]]+\])?:' clippy-v2.txt || true)
+          echo "emotiv-cortex-v2 clippy warnings: ${warning_count} (budget: ${CLIPPY_WARNINGS_V2_MAX})"
+          if [ "${warning_count}" -gt "${CLIPPY_WARNINGS_V2_MAX}" ]; then
+            echo "clippy warning budget exceeded for emotiv-cortex-v2"
+            exit 1
+          fi
+
+      - name: Clippy gate (CLI no default features + warning budget)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy -p emotiv-cortex-cli --bin emotiv-cortex-cli \
+            --no-default-features \
+            -- -D clippy::unwrap_used -D clippy::expect_used \
+            -D clippy::panic -D clippy::todo -D clippy::unimplemented \
+            2>&1 | tee clippy-cli.txt
+
+          warning_count=$(grep -cE '^warning(\[[^]]+\])?:' clippy-cli.txt || true)
+          echo "emotiv-cortex-cli clippy warnings: ${warning_count} (budget: ${CLIPPY_WARNINGS_CLI_MAX})"
+          if [ "${warning_count}" -gt "${CLIPPY_WARNINGS_CLI_MAX}" ]; then
+            echo "clippy warning budget exceeded for emotiv-cortex-cli"
+            exit 1
+          fi
 
       - name: Clippy pedantic report (v2 rustls)
         continue-on-error: true
@@ -58,7 +81,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
 
-      - name: Coverage threshold (workspace line >= 50%)
+      - name: Coverage threshold (workspace line >= budget)
         env:
           EMOTIV_SKIP_LIVE_TESTS: "1"
         shell: bash
@@ -66,7 +89,7 @@ jobs:
           set -euo pipefail
           cargo llvm-cov --workspace --all-targets \
             --lcov --output-path lcov.info \
-            --fail-under-lines 50 | tee coverage.txt
+            --fail-under-lines "${COVERAGE_MIN_LINES}" | tee coverage.txt
 
       - name: Coverage gate summary
         if: ${{ success() }}
@@ -75,7 +98,7 @@ jobs:
           {
             echo "## Coverage Gate"
             echo ""
-            echo "- Threshold: line coverage >= 50%"
+            echo "- Threshold: line coverage >= ${COVERAGE_MIN_LINES}%"
             echo "- Result: PASS"
             echo "- Total coverage:"
             grep '^TOTAL' coverage.txt || echo "(TOTAL row not found in output)"

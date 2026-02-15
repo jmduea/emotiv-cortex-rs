@@ -78,16 +78,14 @@ async fn live_query_headsets_and_optional_session_lifecycle_smoke() {
     }
 
     let selected = if let Some(headset_id) = preferred_headset.as_deref() {
-        match headsets.iter().find(|h| h.id == headset_id) {
-            Some(headset) => headset,
-            None => {
-                eprintln!(
-                    "Skipping session lifecycle smoke: requested EMOTIV_HEADSET_ID '{}' was not found.",
-                    headset_id
-                );
-                client.disconnect().await.unwrap();
-                return;
-            }
+        if let Some(headset) = headsets.iter().find(|h| h.id == headset_id) {
+            headset
+        } else {
+            eprintln!(
+                "Skipping session lifecycle smoke: requested EMOTIV_HEADSET_ID '{headset_id}' was not found."
+            );
+            client.disconnect().await.unwrap();
+            return;
         }
     } else {
         &headsets[0]

@@ -33,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let det_info = client
         .get_detection_info(DetectionType::MentalCommand)
         .await?;
-    println!("Detection info: {:?}", det_info);
+    println!("Detection info: {det_info:?}");
 
     // List and load a profile
     let profiles = client.query_profiles(&token).await?;

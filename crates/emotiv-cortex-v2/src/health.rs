@@ -122,6 +122,7 @@ impl HealthMonitor {
     }
 
     /// Returns whether the monitor is still running.
+    #[must_use]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }

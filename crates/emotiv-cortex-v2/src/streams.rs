@@ -2,7 +2,7 @@
 //!
 //! Typed stream adapters for Cortex data streams.
 //!
-//! ## TypedStream
+//! ## `TypedStream`
 //!
 //! [`TypedStream`] is a generic adapter that converts raw JSON events from an
 //! `mpsc` channel into typed values using a parser closure. Events that fail
@@ -41,6 +41,24 @@ use crate::protocol::streams::{
     BandPowerData, DeviceQuality, EegData, EegQuality, EqEvent, FacialExpression, MentalCommand,
     MotEvent, MotionData, PerformanceMetrics, PowEvent, SysEvent,
 };
+
+fn f64_to_f32(value: f64) -> Option<f32> {
+    if !value.is_finite() {
+        return None;
+    }
+    value.to_string().parse::<f32>().ok()
+}
+
+fn seconds_to_micros_i64(timestamp_secs: f64) -> Option<i64> {
+    if !timestamp_secs.is_finite() {
+        return None;
+    }
+    let micros = timestamp_secs * 1_000_000.0;
+    if !micros.is_finite() {
+        return None;
+    }
+    format!("{micros:.0}").parse::<i64>().ok()
+}
 
 /// Generic stream adapter that receives raw JSON events from an mpsc channel
 /// and transforms them into typed values using a parser closure.
@@ -105,7 +123,6 @@ where
                         return Poll::Ready(Some(parsed));
                     }
                     // Parse failed — skip and try the next event
-                    continue;
                 }
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Pending => return Poll::Pending,
@@ -116,7 +133,7 @@ where
 
 // ─── Helper ──────────────────────────────────────────────────────────────
 
-/// Create a stream channel on the client, returning a ProtocolError if the
+/// Create a stream channel on the client, returning a `ProtocolError` if the
 /// internal mutex is poisoned (should never happen in practice).
 fn add_channel(
     client: &CortexClient,
@@ -125,7 +142,7 @@ fn add_channel(
     client
         .add_stream_channel(stream)
         .ok_or_else(|| CortexError::ProtocolError {
-            reason: format!("Failed to create {} stream channel", stream),
+            reason: format!("Failed to create {stream} stream channel"),
         })
 }
 
@@ -141,6 +158,10 @@ fn add_channel(
 /// to get this value.
 ///
 /// [`HeadsetModel::num_channels()`]: crate::headset::HeadsetModel::num_channels
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_eeg(
     client: &CortexClient,
     cortex_token: &str,
@@ -172,6 +193,10 @@ pub async fn subscribe_eeg(
 /// to get this value.
 ///
 /// [`HeadsetModel::num_channels()`]: crate::headset::HeadsetModel::num_channels
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_dev(
     client: &CortexClient,
     cortex_token: &str,
@@ -186,7 +211,7 @@ pub async fn subscribe_dev(
 
     Ok(Box::pin(TypedStream::new(rx, move |event| {
         let dev_array = event.get("dev")?.as_array()?;
-        let dev_values: Vec<serde_json::Value> = dev_array.to_vec();
+        let dev_values: Vec<serde_json::Value> = dev_array.clone();
         DeviceQuality::from_dev_array(&dev_values, num_channels)
     })))
 }
@@ -197,6 +222,10 @@ pub async fn subscribe_dev(
 ///
 /// Returns a stream of [`MotionData`] containing accelerometer,
 /// magnetometer, and quaternion readings.
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_motion(
     client: &CortexClient,
     cortex_token: &str,
@@ -223,6 +252,10 @@ pub async fn subscribe_motion(
 /// `dev` stream — values indicate signal quality rather than contact quality.
 ///
 /// `num_channels` must match the headset's EEG channel count.
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_eq(
     client: &CortexClient,
     cortex_token: &str,
@@ -249,6 +282,10 @@ pub async fn subscribe_eq(
 /// frequency band powers (theta/alpha/betaL/betaH/gamma in uV^2/Hz).
 ///
 /// `num_channels` must match the headset's EEG channel count.
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_band_power(
     client: &CortexClient,
     cortex_token: &str,
@@ -273,6 +310,10 @@ pub async fn subscribe_band_power(
 ///
 /// Returns a stream of [`PerformanceMetrics`] containing Emotiv's
 /// computed cognitive state metrics (engagement, stress, attention, etc.).
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_metrics(
     client: &CortexClient,
     cortex_token: &str,
@@ -286,10 +327,14 @@ pub async fn subscribe_metrics(
 
     Ok(Box::pin(TypedStream::new(rx, |event| {
         let met = event.get("met")?.as_array()?;
-        let f = |i: usize| -> Option<f32> { met.get(i).and_then(|v| v.as_f64()).map(|v| v as f32) };
+        let f = |i: usize| -> Option<f32> {
+            met.get(i)
+                .and_then(serde_json::Value::as_f64)
+                .and_then(f64_to_f32)
+        };
         let time = event.get("time")?.as_f64()?;
         Some(PerformanceMetrics {
-            timestamp: (time * 1_000_000.0) as i64,
+            timestamp: seconds_to_micros_i64(time)?,
             engagement: f(0),
             excitement: f(1),
             long_excitement: f(2),
@@ -308,6 +353,10 @@ pub async fn subscribe_metrics(
 ///
 /// Returns a stream of [`MentalCommand`] with the detected action and power.
 /// Requires a loaded profile with trained mental commands.
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_mental_commands(
     client: &CortexClient,
     cortex_token: &str,
@@ -322,7 +371,7 @@ pub async fn subscribe_mental_commands(
     Ok(Box::pin(TypedStream::new(rx, |event| {
         let com = event.get("com")?.as_array()?;
         let action = com.first()?.as_str()?.to_string();
-        let power = com.get(1)?.as_f64()? as f32;
+        let power = f64_to_f32(com.get(1)?.as_f64()?)?;
         Some(MentalCommand { action, power })
     })))
 }
@@ -333,6 +382,10 @@ pub async fn subscribe_mental_commands(
 ///
 /// Returns a stream of [`FacialExpression`] with eye actions,
 /// upper/lower face actions and their power levels.
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_facial_expressions(
     client: &CortexClient,
     cortex_token: &str,
@@ -348,9 +401,9 @@ pub async fn subscribe_facial_expressions(
         let fac = event.get("fac")?.as_array()?;
         let eye_action = fac.first()?.as_str()?.to_string();
         let upper_face_action = fac.get(1)?.as_str()?.to_string();
-        let upper_face_power = fac.get(2)?.as_f64()? as f32;
+        let upper_face_power = f64_to_f32(fac.get(2)?.as_f64()?)?;
         let lower_face_action = fac.get(3)?.as_str()?.to_string();
-        let lower_face_power = fac.get(4)?.as_f64()? as f32;
+        let lower_face_power = f64_to_f32(fac.get(4)?.as_f64()?)?;
         Some(FacialExpression {
             eye_action,
             upper_face_action,
@@ -367,6 +420,10 @@ pub async fn subscribe_facial_expressions(
 ///
 /// Returns a stream of [`SysEvent`] containing system-level notifications
 /// such as training events and detection results.
+///
+/// # Errors
+/// Returns any error produced by stream channel registration or
+/// subscription RPC calls.
 pub async fn subscribe_sys(
     client: &CortexClient,
     cortex_token: &str,
@@ -387,6 +444,9 @@ pub async fn subscribe_sys(
 
 /// Unsubscribe from one or more data streams and remove the corresponding
 /// channels from the client.
+///
+/// # Errors
+/// Returns any error produced by the Cortex `unsubscribe` RPC call.
 pub async fn unsubscribe(
     client: &CortexClient,
     cortex_token: &str,

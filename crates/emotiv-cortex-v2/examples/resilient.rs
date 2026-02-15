@@ -1,4 +1,4 @@
-//! Demonstrates the ResilientClient with auto-reconnect and event monitoring.
+//! Demonstrates the `ResilientClient` with auto-reconnect and event monitoring.
 //!
 //! ```bash
 //! EMOTIV_CLIENT_ID=xxx EMOTIV_CLIENT_SECRET=yyy cargo run --example resilient
@@ -24,26 +24,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             match event {
                 ConnectionEvent::Connected => println!("[event] Connected"),
                 ConnectionEvent::Disconnected { reason } => {
-                    println!("[event] Disconnected: {}", reason)
+                    println!("[event] Disconnected: {reason}");
                 }
                 ConnectionEvent::Reconnecting { attempt } => {
-                    println!("[event] Reconnecting (attempt {})", attempt)
+                    println!("[event] Reconnecting (attempt {attempt})");
                 }
                 ConnectionEvent::Reconnected => println!("[event] Reconnected!"),
                 ConnectionEvent::ReconnectFailed {
                     attempts,
                     last_error,
-                } => println!(
-                    "[event] Reconnect failed after {} attempts: {}",
-                    attempts, last_error
-                ),
+                } => println!("[event] Reconnect failed after {attempts} attempts: {last_error}"),
             }
         }
     });
 
     // Use the client
     let info = client.get_cortex_info().await?;
-    println!("Cortex info: {}", info);
+    println!("Cortex info: {info}");
 
     let headsets = client
         .query_headsets(QueryHeadsetsOptions::default())
@@ -67,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interval.tick().await;
             match poll_client.get_cortex_info().await {
                 Ok(_) => println!("[poll] Cortex is reachable"),
-                Err(e) => println!("[poll] Error (reconnect may follow): {}", e),
+                Err(e) => println!("[poll] Error (reconnect may follow): {e}"),
             }
         }
     };

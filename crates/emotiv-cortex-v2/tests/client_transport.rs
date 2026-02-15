@@ -232,8 +232,7 @@ async fn stop_reader_finishes_without_polling_delay() {
 
     assert!(
         elapsed < std::time::Duration::from_millis(150),
-        "reader stop took {:?}",
-        elapsed
+        "reader stop took {elapsed:?}"
     );
     assert!(!client.is_connected());
 

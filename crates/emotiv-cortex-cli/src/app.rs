@@ -34,20 +34,15 @@ pub fn format_status(state: &SessionState) -> String {
     let headset = state
         .headset_id
         .as_deref()
-        .map(|h| h.cyan().to_string())
-        .unwrap_or_else(|| "none".dimmed().to_string());
+        .map_or_else(|| "none".dimmed().to_string(), |h| h.cyan().to_string());
 
-    let session = state
-        .session_id
-        .as_deref()
-        .map(|s| s[..12.min(s.len())].cyan().to_string())
-        .unwrap_or_else(|| "none".dimmed().to_string());
+    let session = state.session_id.as_deref().map_or_else(
+        || "none".dimmed().to_string(),
+        |s| s[..12.min(s.len())].cyan().to_string(),
+    );
 
     #[allow(unused_mut)]
-    let mut status = format!(
-        "Auth: {} | Headset: {} | Session: {}",
-        auth, headset, session
-    );
+    let mut status = format!("Auth: {auth} | Headset: {headset} | Session: {session}");
 
     #[cfg(all(feature = "lsl", not(target_os = "linux")))]
     if let Some(ref handle) = state.lsl_streaming {

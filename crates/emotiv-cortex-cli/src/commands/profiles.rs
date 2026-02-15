@@ -8,7 +8,7 @@ use crate::app::SessionState;
 // ─── Profiles ───────────────────────────────────────────────────────────
 
 pub async fn cmd_profiles(state: &mut SessionState) {
-    let Ok(token) = state.token().map(|t| t.to_string()) else {
+    let Ok(token) = state.token().map(std::string::ToString::to_string) else {
         eprintln!("{}", "Authenticate first.".yellow());
         return;
     };
@@ -61,7 +61,7 @@ pub async fn cmd_profiles(state: &mut SessionState) {
                 Err(e) => eprintln!("{} {}", "Error:".red(), e),
             }
         }
-        Some(2) | Some(3) | Some(4) | Some(5) | Some(6) => {
+        Some(2..=6) => {
             if headset_id.is_empty() {
                 eprintln!("{}", "Select a headset first.".yellow());
                 return;

@@ -15,12 +15,14 @@ pub struct CortexRequest {
 
 impl CortexRequest {
     /// Create a new request with the given method and params.
+    #[must_use]
     pub fn new(id: u64, method: &'static str, params: serde_json::Value) -> Self {
-        let params = if params.is_object() && params.as_object().is_some_and(|m| m.is_empty()) {
-            None
-        } else {
-            Some(params)
-        };
+        let params =
+            if params.is_object() && params.as_object().is_some_and(serde_json::Map::is_empty) {
+                None
+            } else {
+                Some(params)
+            };
 
         Self {
             jsonrpc: "2.0",
@@ -71,8 +73,7 @@ mod tests {
         assert!(json.contains("\"method\":\"queryHeadsets\""));
         assert!(
             !json.contains("\"params\""),
-            "empty params should be omitted: {}",
-            json
+            "empty params should be omitted: {json}"
         );
     }
 
@@ -87,8 +88,7 @@ mod tests {
         let json = serde_json::to_string(&req).unwrap();
         assert!(
             json.contains("\"params\""),
-            "non-empty params should be present: {}",
-            json
+            "non-empty params should be present: {json}"
         );
         assert!(json.contains("\"clientId\":\"abc\""));
     }

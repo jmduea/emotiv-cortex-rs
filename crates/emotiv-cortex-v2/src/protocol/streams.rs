@@ -2,6 +2,24 @@
 
 use serde::Deserialize;
 
+fn f64_to_f32(value: f64) -> Option<f32> {
+    if !value.is_finite() {
+        return None;
+    }
+    value.to_string().parse::<f32>().ok()
+}
+
+fn seconds_to_micros_i64(timestamp_secs: f64) -> Option<i64> {
+    if !timestamp_secs.is_finite() {
+        return None;
+    }
+    let micros = timestamp_secs * 1_000_000.0;
+    if !micros.is_finite() {
+        return None;
+    }
+    format!("{micros:.0}").parse::<i64>().ok()
+}
+
 /// An EEG data event from a subscribed stream.
 ///
 /// The `eeg` array is a heterogeneous list whose columns are reported by
@@ -53,6 +71,7 @@ impl EegData {
     /// `[COUNTER, INTERPOLATED, ch1, .., chN, RAW_CQ, MARKER_HARDWARE, MARKERS]`
     ///
     /// Returns `None` if the array is too short or contains unexpected types.
+    #[must_use]
     pub fn from_eeg_array(
         eeg: &[serde_json::Value],
         num_channels: usize,
@@ -63,18 +82,18 @@ impl EegData {
             return None;
         }
 
-        let counter = eeg[0].as_u64()? as u32;
+        let counter = u32::try_from(eeg[0].as_u64()?).ok()?;
         let interpolated = eeg[1].as_u64()? != 0;
 
         let channels: Vec<f32> = eeg[2..2 + num_channels]
             .iter()
-            .map(|v| v.as_f64().map(|f| f as f32))
+            .map(|v| v.as_f64().and_then(f64_to_f32))
             .collect::<Option<Vec<f32>>>()?;
 
-        let raw_cq = eeg[2 + num_channels].as_f64()? as f32;
+        let raw_cq = f64_to_f32(eeg[2 + num_channels].as_f64()?)?;
 
         Some(Self {
-            timestamp: (timestamp * 1_000_000.0) as i64,
+            timestamp: seconds_to_micros_i64(timestamp)?,
             counter,
             interpolated,
             channels,
@@ -125,20 +144,21 @@ impl DeviceQuality {
     /// - EPOC (14ch): `[battery, signal, AF3_cq, ..., AF4_cq, overall, battery_pct]`
     ///
     /// The `num_channels` parameter tells us how many CQ values to extract.
+    #[must_use]
     pub fn from_dev_array(dev: &[serde_json::Value], num_channels: usize) -> Option<Self> {
         // Minimum: battery + signal + num_channels CQ values + overall + battery_pct
         if dev.len() < 2 + num_channels + 2 {
             return None;
         }
 
-        let battery_level = dev[0].as_u64()? as u8;
-        let signal_strength = dev[1].as_f64()? as f32;
+        let battery_level = u8::try_from(dev[0].as_u64()?).ok()?;
+        let signal_strength = f64_to_f32(dev[1].as_f64()?)?;
 
         let channel_quality: Vec<f32> = dev[2..2 + num_channels]
             .iter()
-            .filter_map(|v| v.as_f64())
-            .map(|cq| (cq / 4.0) as f32) // Normalize 0–4 to 0.0–1.0
-            .collect();
+            .filter_map(serde_json::Value::as_f64)
+            .map(|cq| f64_to_f32(cq / 4.0)) // Normalize 0–4 to 0.0–1.0
+            .collect::<Option<Vec<f32>>>()?;
 
         if channel_quality.len() != num_channels {
             return None;
@@ -147,8 +167,8 @@ impl DeviceQuality {
         let overall_idx = 2 + num_channels;
         let battery_pct_idx = overall_idx + 1;
 
-        let overall_quality = (dev.get(overall_idx)?.as_f64()? / 100.0) as f32;
-        let battery_percent = dev.get(battery_pct_idx)?.as_u64()? as u8;
+        let overall_quality = f64_to_f32(dev.get(overall_idx)?.as_f64()? / 100.0)?;
+        let battery_percent = u8::try_from(dev.get(battery_pct_idx)?.as_u64()?).ok()?;
 
         Some(Self {
             battery_level,
@@ -196,6 +216,7 @@ impl MotionData {
     ///
     /// Expected format (Insight/EPOC X):
     /// `[COUNTER, INTERPOLATED, Q0, Q1, Q2, Q3, ACCX, ACCY, ACCZ, MAGX, MAGY, MAGZ]`
+    #[must_use]
     pub fn from_mot_array(mot: &[f64], timestamp: f64) -> Option<Self> {
         if mot.len() < 12 {
             return None;
@@ -203,10 +224,23 @@ impl MotionData {
 
         // Skip COUNTER (0) and INTERPOLATED (1), then Q0-Q3, then ACC, then MAG
         Some(Self {
-            timestamp: (timestamp * 1_000_000.0) as i64,
-            quaternion: Some([mot[2] as f32, mot[3] as f32, mot[4] as f32, mot[5] as f32]),
-            accelerometer: [mot[6] as f32, mot[7] as f32, mot[8] as f32],
-            magnetometer: [mot[9] as f32, mot[10] as f32, mot[11] as f32],
+            timestamp: seconds_to_micros_i64(timestamp)?,
+            quaternion: Some([
+                f64_to_f32(mot[2])?,
+                f64_to_f32(mot[3])?,
+                f64_to_f32(mot[4])?,
+                f64_to_f32(mot[5])?,
+            ]),
+            accelerometer: [
+                f64_to_f32(mot[6])?,
+                f64_to_f32(mot[7])?,
+                f64_to_f32(mot[8])?,
+            ],
+            magnetometer: [
+                f64_to_f32(mot[9])?,
+                f64_to_f32(mot[10])?,
+                f64_to_f32(mot[11])?,
+            ],
         })
     }
 }
@@ -244,21 +278,22 @@ impl EegQuality {
     ///
     /// The array format: `[battery, overall, sr_quality, ch1_q, ch2_q, ..., chN_q]`
     /// where quality values are 0–4 (normalized to 0.0–1.0).
+    #[must_use]
     pub fn from_eq_array(eq: &[serde_json::Value], num_channels: usize) -> Option<Self> {
         // Minimum: battery + overall + sr_quality + num_channels sensor values
         if eq.len() < 3 + num_channels {
             return None;
         }
 
-        let battery_percent = eq[0].as_u64()? as u8;
-        let overall = (eq[1].as_f64()? / 100.0) as f32;
-        let sample_rate_quality = eq[2].as_f64()? as f32;
+        let battery_percent = u8::try_from(eq[0].as_u64()?).ok()?;
+        let overall = f64_to_f32(eq[1].as_f64()? / 100.0)?;
+        let sample_rate_quality = f64_to_f32(eq[2].as_f64()?)?;
 
         let sensor_quality: Vec<f32> = eq[3..3 + num_channels]
             .iter()
-            .filter_map(|v| v.as_f64())
-            .map(|q| (q / 4.0) as f32) // Normalize 0–4 to 0.0–1.0
-            .collect();
+            .filter_map(serde_json::Value::as_f64)
+            .map(|q| f64_to_f32(q / 4.0)) // Normalize 0–4 to 0.0–1.0
+            .collect::<Option<Vec<f32>>>()?;
 
         if sensor_quality.len() != num_channels {
             return None;
@@ -286,7 +321,7 @@ pub struct PowEvent {
     /// Timestamp (Unix seconds as f64, from Cortex).
     pub time: f64,
 
-    /// Band power values: [ch1_theta, ch1_alpha, ch1_betaL, ch1_betaH, ch1_gamma, ch2_theta, ...].
+    /// Band power values: [`ch1_theta`, `ch1_alpha`, `ch1_betaL`, `ch1_betaH`, `ch1_gamma`, `ch2_theta`, ...].
     pub pow: Vec<f64>,
 }
 
@@ -304,6 +339,7 @@ impl BandPowerData {
     /// Parse a `PowEvent.pow` array into structured band power data.
     ///
     /// The array is flat: 5 values per channel (theta, alpha, betaL, betaH, gamma).
+    #[must_use]
     pub fn from_pow_array(pow: &[f64], num_channels: usize, timestamp: f64) -> Option<Self> {
         if pow.len() < num_channels * 5 {
             return None;
@@ -313,18 +349,18 @@ impl BandPowerData {
             .chunks_exact(5)
             .take(num_channels)
             .map(|chunk| {
-                [
-                    chunk[0] as f32,
-                    chunk[1] as f32,
-                    chunk[2] as f32,
-                    chunk[3] as f32,
-                    chunk[4] as f32,
-                ]
+                Some([
+                    f64_to_f32(chunk[0])?,
+                    f64_to_f32(chunk[1])?,
+                    f64_to_f32(chunk[2])?,
+                    f64_to_f32(chunk[3])?,
+                    f64_to_f32(chunk[4])?,
+                ])
             })
-            .collect();
+            .collect::<Option<Vec<[f32; 5]>>>()?;
 
         Some(Self {
-            timestamp: (timestamp * 1_000_000.0) as i64,
+            timestamp: seconds_to_micros_i64(timestamp)?,
             channel_powers,
         })
     }
@@ -502,7 +538,7 @@ mod tests {
     fn test_parse_eeg_data_insight() {
         // [COUNTER, INTERPOLATED, AF3, T7, Pz, T8, AF4, RAW_CQ, MARKER_HARDWARE, MARKERS]
         let eeg: Vec<serde_json::Value> = serde_json::from_str(
-            r#"[29, 0, 4262.564, 4264.615, 4265.128, 4267.179, 4263.59, 0.0, 0, []]"#,
+            r"[29, 0, 4262.564, 4264.615, 4265.128, 4267.179, 4263.59, 0.0, 0, []]",
         )
         .unwrap();
 
@@ -517,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_parse_eeg_data_too_short() {
-        let eeg: Vec<serde_json::Value> = serde_json::from_str(r#"[29, 0, 4262.564]"#).unwrap();
+        let eeg: Vec<serde_json::Value> = serde_json::from_str(r"[29, 0, 4262.564]").unwrap();
         assert!(EegData::from_eeg_array(&eeg, 5, 1.0).is_none());
     }
 
@@ -538,7 +574,7 @@ mod tests {
         // Insight has 5 channels: AF3, AF4, T7, T8, Pz
         // Format: [battery, signal, AF3_cq, AF4_cq, T7_cq, T8_cq, Pz_cq, overall, battery_pct]
         let dev: Vec<serde_json::Value> =
-            serde_json::from_str(r#"[4, 1, 4, 3, 2, 4, 1, 75, 88]"#).unwrap();
+            serde_json::from_str(r"[4, 1, 4, 3, 2, 4, 1, 75, 88]").unwrap();
 
         let quality = DeviceQuality::from_dev_array(&dev, 5).unwrap();
         assert_eq!(quality.battery_level, 4);
@@ -553,7 +589,7 @@ mod tests {
 
     #[test]
     fn test_parse_device_quality_too_short() {
-        let dev: Vec<serde_json::Value> = serde_json::from_str(r#"[4, 1]"#).unwrap();
+        let dev: Vec<serde_json::Value> = serde_json::from_str(r"[4, 1]").unwrap();
         assert!(DeviceQuality::from_dev_array(&dev, 5).is_none());
     }
 
@@ -561,7 +597,7 @@ mod tests {
     fn test_parse_eq_quality_insight() {
         // [battery_pct, overall_pct, sample_rate_quality, AF3, AF4, T7, T8, Pz]
         let eq: Vec<serde_json::Value> =
-            serde_json::from_str(r#"[88, 75, 0.9, 4, 3, 2, 1, 4]"#).unwrap();
+            serde_json::from_str(r"[88, 75, 0.9, 4, 3, 2, 1, 4]").unwrap();
 
         let parsed = EegQuality::from_eq_array(&eq, 5).unwrap();
         assert_eq!(parsed.battery_percent, 88);
@@ -574,7 +610,7 @@ mod tests {
 
     #[test]
     fn test_parse_eq_quality_too_short() {
-        let eq: Vec<serde_json::Value> = serde_json::from_str(r#"[88, 75, 1.0, 4]"#).unwrap();
+        let eq: Vec<serde_json::Value> = serde_json::from_str(r"[88, 75, 1.0, 4]").unwrap();
         assert!(EegQuality::from_eq_array(&eq, 5).is_none());
     }
 

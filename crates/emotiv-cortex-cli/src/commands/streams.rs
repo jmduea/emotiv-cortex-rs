@@ -12,7 +12,7 @@ use crate::app::SessionState;
 // ─── Stream Data ────────────────────────────────────────────────────────
 
 pub async fn cmd_stream_data(state: &mut SessionState) {
-    let Ok(token) = state.token().map(|t| t.to_string()) else {
+    let Ok(token) = state.token().map(std::string::ToString::to_string) else {
         eprintln!("{}", "Authenticate first.".yellow());
         return;
     };
@@ -24,8 +24,7 @@ pub async fn cmd_stream_data(state: &mut SessionState) {
     let model = state
         .headset_id
         .as_deref()
-        .map(HeadsetModel::from_headset_id)
-        .unwrap_or(HeadsetModel::Insight);
+        .map_or(HeadsetModel::Insight, HeadsetModel::from_headset_id);
     let num_ch = model.num_channels();
 
     let items = vec![
@@ -105,7 +104,7 @@ async fn stream_eeg(state: &SessionState, token: &str, session_id: &str, num_ch:
                 let vals: Vec<String> = eeg_data
                     .channels
                     .iter()
-                    .map(|v| format!("{:.2}", v))
+                    .map(|v| format!("{v:.2}"))
                     .collect();
                 println!("[sample {}] {}", eeg_data.counter, vals.join(" | "));
             })
@@ -124,7 +123,7 @@ async fn stream_dev(state: &SessionState, token: &str, session_id: &str, num_ch:
                 let quals: Vec<String> = dq
                     .channel_quality
                     .iter()
-                    .map(|q| format!("{:.1}", q))
+                    .map(|q| format!("{q:.1}"))
                     .collect();
                 println!(
                     "Battery: {}% | Signal: {:.1} | CQ: [{}] | Overall: {:.1}",
@@ -271,7 +270,7 @@ async fn stream_eq(state: &SessionState, token: &str, session_id: &str, num_ch: 
                 let quals: Vec<String> = eq
                     .sensor_quality
                     .iter()
-                    .map(|q| format!("{:.2}", q))
+                    .map(|q| format!("{q:.2}"))
                     .collect();
                 println!(
                     "Battery: {}% | Overall: {:.2} | SR: {:.2} | Sensors: [{}]",
@@ -293,7 +292,7 @@ async fn stream_sys(state: &SessionState, token: &str, session_id: &str, max: u6
         Ok(mut s) => {
             println!("{}", "Streaming system events... (Ctrl+C to stop)".green());
             run_stream_loop(&mut s, max, |event| {
-                println!("SYS: {:?}", event);
+                println!("SYS: {event:?}");
             })
             .await;
         }

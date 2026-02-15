@@ -114,127 +114,136 @@ pub async fn cmd_headsets(state: &mut SessionState) {
         .unwrap_or(None);
 
     match sel {
-        Some(0) => match state
-            .client
-            .query_headsets(QueryHeadsetsOptions::default())
-            .await
-        {
-            Ok(headsets) => {
-                if headsets.is_empty() {
-                    println!("No headsets found.");
-                } else {
-                    print_headsets(&headsets);
-                }
-            }
-            Err(e) => eprintln!("{} {}", "Error:".red(), e),
-        },
-        Some(1) => match state.client.refresh_headsets().await {
-            Ok(()) => {
-                println!(
-                    "{}",
-                    "Bluetooth scan triggered. Wait a few seconds then query.".green()
-                );
-            }
-            Err(e) => eprintln!("{} {}", "Error:".red(), e),
-        },
-        Some(2) => {
-            let id: String = Input::new()
-                .with_prompt("Headset ID to connect")
-                .default(state.headset_id.clone().unwrap_or_default())
-                .interact_text()
-                .unwrap_or_default();
-
-            if !id.is_empty() {
-                match state.client.connect_headset(&id).await {
-                    Ok(()) => {
-                        println!("{} Connection initiated for {}", "OK".green(), id.cyan());
-                        state.headset_id = Some(id);
-                    }
-                    Err(e) => eprintln!("{} {}", "Error:".red(), e),
-                }
-            }
-        }
-        Some(3) => {
-            if let Some(id) = &state.headset_id {
-                match state.client.disconnect_headset(id).await {
-                    Ok(()) => {
-                        println!("{} Disconnected {}", "OK".green(), id.cyan());
-                        state.headset_id = None;
-                    }
-                    Err(e) => eprintln!("{} {}", "Error:".red(), e),
-                }
-            } else {
-                println!("No headset selected.");
-            }
-        }
-        Some(4) => {
-            let Ok(token) = state.token() else {
-                eprintln!("{}", "Authenticate first.".yellow());
-                return;
-            };
-            let id = state.headset_id.clone().unwrap_or_default();
-            if id.is_empty() {
-                eprintln!("{}", "Select a headset first.".yellow());
-                return;
-            }
-            let setting_json: String = Input::new()
-                .with_prompt("Settings JSON (e.g. {\"mode\":\"EPOC\",\"eegRate\":256})")
-                .interact_text()
-                .unwrap_or_default();
-            match serde_json::from_str::<serde_json::Value>(&setting_json) {
-                Ok(setting) => match state.client.update_headset(token, &id, setting).await {
-                    Ok(result) => {
-                        println!("{}", "Headset settings updated:".green());
-                        print_pretty_json(&result);
-                    }
-                    Err(e) => eprintln!("{} {}", "Error:".red(), e),
-                },
-                Err(e) => eprintln!("{} Invalid JSON: {}", "Error:".red(), e),
-            }
-        }
-        Some(5) => {
-            let Ok(token) = state.token() else {
-                eprintln!("{}", "Authenticate first.".yellow());
-                return;
-            };
-            let id = state.headset_id.clone().unwrap_or_default();
-            if id.is_empty() {
-                eprintln!("{}", "Select a headset first.".yellow());
-                return;
-            }
-            let pos: String = Input::new()
-                .with_prompt("Headband position (empty to skip)")
-                .default(String::new())
-                .interact_text()
-                .unwrap_or_default();
-            let name: String = Input::new()
-                .with_prompt("Custom name (empty to skip)")
-                .default(String::new())
-                .interact_text()
-                .unwrap_or_default();
-            let pos_opt = if pos.is_empty() {
-                None
-            } else {
-                Some(pos.as_str())
-            };
-            let name_opt = if name.is_empty() {
-                None
-            } else {
-                Some(name.as_str())
-            };
-            match state
-                .client
-                .update_headset_custom_info(token, &id, pos_opt, name_opt)
-                .await
-            {
-                Ok(result) => {
-                    println!("{}", "Custom info updated:".green());
-                    print_pretty_json(&result);
-                }
-                Err(e) => eprintln!("{} {}", "Error:".red(), e),
-            }
-        }
+        Some(0) => query_headsets(state).await,
+        Some(1) => refresh_headsets(state).await,
+        Some(2) => connect_headset(state).await,
+        Some(3) => disconnect_headset(state).await,
+        Some(4) => update_headset_settings(state).await,
+        Some(5) => update_headset_custom_info(state).await,
         _ => {}
+    }
+}
+
+async fn query_headsets(state: &mut SessionState) {
+    match state
+        .client
+        .query_headsets(QueryHeadsetsOptions::default())
+        .await
+    {
+        Ok(headsets) if headsets.is_empty() => println!("No headsets found."),
+        Ok(headsets) => print_headsets(&headsets),
+        Err(e) => eprintln!("{} {}", "Error:".red(), e),
+    }
+}
+
+async fn refresh_headsets(state: &mut SessionState) {
+    match state.client.refresh_headsets().await {
+        Ok(()) => println!(
+            "{}",
+            "Bluetooth scan triggered. Wait a few seconds then query.".green()
+        ),
+        Err(e) => eprintln!("{} {}", "Error:".red(), e),
+    }
+}
+
+async fn connect_headset(state: &mut SessionState) {
+    let id: String = Input::new()
+        .with_prompt("Headset ID to connect")
+        .default(state.headset_id.clone().unwrap_or_default())
+        .interact_text()
+        .unwrap_or_default();
+
+    if id.is_empty() {
+        return;
+    }
+
+    match state.client.connect_headset(&id).await {
+        Ok(()) => {
+            println!("{} Connection initiated for {}", "OK".green(), id.cyan());
+            state.headset_id = Some(id);
+        }
+        Err(e) => eprintln!("{} {}", "Error:".red(), e),
+    }
+}
+
+async fn disconnect_headset(state: &mut SessionState) {
+    let Some(id) = &state.headset_id else {
+        println!("No headset selected.");
+        return;
+    };
+    match state.client.disconnect_headset(id).await {
+        Ok(()) => {
+            println!("{} Disconnected {}", "OK".green(), id.cyan());
+            state.headset_id = None;
+        }
+        Err(e) => eprintln!("{} {}", "Error:".red(), e),
+    }
+}
+
+fn require_headset_auth(state: &SessionState) -> Option<(String, String)> {
+    let Ok(token) = state.token() else {
+        eprintln!("{}", "Authenticate first.".yellow());
+        return None;
+    };
+    let id = state.headset_id.clone().unwrap_or_default();
+    if id.is_empty() {
+        eprintln!("{}", "Select a headset first.".yellow());
+        return None;
+    }
+    Some((token.to_string(), id))
+}
+
+async fn update_headset_settings(state: &mut SessionState) {
+    let Some((token, id)) = require_headset_auth(state) else {
+        return;
+    };
+    let setting_json: String = Input::new()
+        .with_prompt("Settings JSON (e.g. {\"mode\":\"EPOC\",\"eegRate\":256})")
+        .interact_text()
+        .unwrap_or_default();
+
+    match serde_json::from_str::<serde_json::Value>(&setting_json) {
+        Ok(setting) => match state.client.update_headset(&token, &id, setting).await {
+            Ok(result) => {
+                println!("{}", "Headset settings updated:".green());
+                print_pretty_json(&result);
+            }
+            Err(e) => eprintln!("{} {}", "Error:".red(), e),
+        },
+        Err(e) => eprintln!("{} Invalid JSON: {}", "Error:".red(), e),
+    }
+}
+
+async fn update_headset_custom_info(state: &mut SessionState) {
+    let Some((token, id)) = require_headset_auth(state) else {
+        return;
+    };
+    let pos: String = Input::new()
+        .with_prompt("Headband position (empty to skip)")
+        .default(String::new())
+        .interact_text()
+        .unwrap_or_default();
+    let name: String = Input::new()
+        .with_prompt("Custom name (empty to skip)")
+        .default(String::new())
+        .interact_text()
+        .unwrap_or_default();
+
+    match state
+        .client
+        .update_headset_custom_info(
+            &token,
+            &id,
+            (!pos.is_empty()).then_some(pos.as_str()),
+            (!name.is_empty()).then_some(name.as_str()),
+        )
+        .await
+    {
+        Ok(result) => {
+            println!("{}", "Custom info updated:".green());
+            print_pretty_json(&result);
+        }
+        Err(e) => eprintln!("{} {}", "Error:".red(), e),
     }
 }
 

@@ -120,6 +120,10 @@ impl ResilientClient {
     ///
     /// This establishes the WebSocket connection, performs the full
     /// authentication flow, and optionally starts the health monitor.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn connect(config: CortexConfig) -> CortexResult<Self> {
         let client = CortexClient::connect(&config).await?;
         let cortex_token = client

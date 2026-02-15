@@ -211,7 +211,7 @@ impl ErrorCodes {
     /// License expired or unavailable.
     pub const LICENSE_EXPIRED: i32 = -32024;
 
-    /// User not logged in to EmotivID in the Launcher.
+    /// User not logged in to `EmotivID` in the Launcher.
     pub const USER_NOT_LOGGED_IN: i32 = -32033;
 
     /// Application is unpublished/unapproved for this account.

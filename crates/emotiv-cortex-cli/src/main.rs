@@ -45,7 +45,7 @@ struct Cli {
     #[arg(long, default_value = "wss://localhost:6868")]
     url: Option<String>,
 
-    /// Enable verbose logging (set RUST_LOG for fine-grained control)
+    /// Enable verbose logging (set `RUST_LOG` for fine-grained control)
     #[arg(short, long)]
     verbose: bool,
 
@@ -72,17 +72,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Load config
-    let mut config = match CortexConfig::discover(cli.config.as_deref().map(Path::new)) {
-        Ok(c) => c,
-        Err(_) => {
-            println!("{} No config file found. Using defaults.", "Note:".yellow());
-            println!(
-                "  Set {} and {} env vars, or create a cortex.toml file.\n",
-                "EMOTIV_CLIENT_ID".cyan(),
-                "EMOTIV_CLIENT_SECRET".cyan()
-            );
-            CortexConfig::new("", "")
-        }
+    let mut config = if let Ok(c) = CortexConfig::discover(cli.config.as_deref().map(Path::new)) {
+        c
+    } else {
+        println!("{} No config file found. Using defaults.", "Note:".yellow());
+        println!(
+            "  Set {} and {} env vars, or create a cortex.toml file.\n",
+            "EMOTIV_CLIENT_ID".cyan(),
+            "EMOTIV_CLIENT_SECRET".cyan()
+        );
+        CortexConfig::new("", "")
     };
 
     if let Some(url) = &cli.url {
@@ -126,33 +125,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    run_menu_loop(&mut state).await?;
+
+    Ok(())
+}
+
+fn menu_items(_state: &SessionState) -> Vec<String> {
+    let mut items = vec![
+        "Cortex Info".to_string(),
+        "Authentication".to_string(),
+        "Headsets".to_string(),
+        "Sessions".to_string(),
+        "Stream Data".to_string(),
+        "Records & Markers".to_string(),
+        "Subjects".to_string(),
+        "Profiles".to_string(),
+        "BCI Training".to_string(),
+    ];
+
+    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+    {
+        let lsl_label = if _state.lsl_streaming.is_some() {
+            "Stream to LSL (active \u{25b6})".to_string()
+        } else {
+            "Stream to LSL".to_string()
+        };
+        items.push(lsl_label);
+    }
+
+    items.push("Quit".to_string());
+    items
+}
+
+async fn run_menu_loop(state: &mut SessionState) -> dialoguer::Result<()> {
     loop {
         println!();
-        let status = format_status(&state);
-        println!("{}", status);
+        println!("{}", format_status(state));
 
-        let mut items = vec![
-            "Cortex Info".to_string(),
-            "Authentication".to_string(),
-            "Headsets".to_string(),
-            "Sessions".to_string(),
-            "Stream Data".to_string(),
-            "Records & Markers".to_string(),
-            "Subjects".to_string(),
-            "Profiles".to_string(),
-            "BCI Training".to_string(),
-        ];
-        #[cfg(all(feature = "lsl", not(target_os = "linux")))]
-        {
-            let lsl_label = if state.lsl_streaming.is_some() {
-                "Stream to LSL (active \u{25b6})".to_string()
-            } else {
-                "Stream to LSL".to_string()
-            };
-            items.push(lsl_label);
-        }
-        items.push("Quit".to_string());
-
+        let items = menu_items(state);
         let selection = Select::new()
             .with_prompt("Select an action")
             .items(&items)
@@ -160,30 +170,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .interact_opt()?;
 
         let quit_index = items.len() - 1;
+        if selection.is_none() || matches!(selection, Some(i) if i == quit_index) {
+            graceful_shutdown(state).await;
+            return Ok(());
+        }
 
         match selection {
-            Some(0) => cmd_cortex_info(&state).await,
-            Some(1) => cmd_authentication(&mut state).await,
-            Some(2) => cmd_headsets(&mut state).await,
-            Some(3) => cmd_sessions(&mut state).await,
-            Some(4) => cmd_stream_data(&mut state).await,
-            Some(5) => cmd_records(&mut state).await,
-            Some(6) => cmd_subjects(&mut state).await,
-            Some(7) => cmd_profiles(&mut state).await,
-            Some(8) => cmd_training(&mut state).await,
+            Some(0) => cmd_cortex_info(state).await,
+            Some(1) => cmd_authentication(state).await,
+            Some(2) => cmd_headsets(state).await,
+            Some(3) => cmd_sessions(state).await,
+            Some(4) => cmd_stream_data(state).await,
+            Some(5) => cmd_records(state).await,
+            Some(6) => cmd_subjects(state).await,
+            Some(7) => cmd_profiles(state).await,
+            Some(8) => cmd_training(state).await,
             #[cfg(all(feature = "lsl", not(target_os = "linux")))]
-            Some(9) => cmd_stream_lsl(&mut state).await,
-            Some(i) if i == quit_index => {
-                graceful_shutdown(&mut state).await;
-                break;
-            }
-            None => {
-                graceful_shutdown(&mut state).await;
-                break;
-            }
+            Some(9) => cmd_stream_lsl(state).await,
             _ => {}
         }
     }
-
-    Ok(())
 }

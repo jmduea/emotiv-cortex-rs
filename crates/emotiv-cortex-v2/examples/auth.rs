@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Check if user is logged in
     let users = client.get_user_login().await?;
-    println!("Logged-in users: {:?}", users);
+    println!("Logged-in users: {users:?}");
 
     // Authenticate
     let token = client

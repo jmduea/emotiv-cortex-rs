@@ -132,6 +132,7 @@ pub enum ConfigMappingMode {
 
 impl ConfigMappingMode {
     /// Returns the Cortex API status string for this mode.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             ConfigMappingMode::Create => "create",
@@ -167,6 +168,7 @@ pub enum ConfigMappingRequest {
 
 impl ConfigMappingRequest {
     /// Returns the operation mode for this request.
+    #[must_use]
     pub fn mode(&self) -> ConfigMappingMode {
         match self {
             ConfigMappingRequest::Create { .. } => ConfigMappingMode::Create,

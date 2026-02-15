@@ -136,7 +136,14 @@ fn build_tls_connector(config: &CortexConfig, url: &str) -> CortexResult<Option<
 }
 
 #[cfg(all(feature = "rustls-tls", not(feature = "native-tls")))]
-fn build_tls_connector(config: &CortexConfig, _url: &str) -> CortexResult<Option<Connector>> {
+fn build_tls_connector(config: &CortexConfig, url: &str) -> CortexResult<Option<Connector>> {
+    let _: http::Uri =
+        url.parse()
+            .map_err(|e: http::uri::InvalidUri| CortexError::ConnectionFailed {
+                url: url.to_string(),
+                reason: format!("Invalid URL: {e}"),
+            })?;
+
     if !config.should_accept_invalid_certs() {
         return Ok(None);
     }
@@ -153,7 +160,13 @@ fn build_tls_connector(config: &CortexConfig, _url: &str) -> CortexResult<Option
     all(feature = "native-tls", feature = "rustls-tls"),
     all(not(feature = "native-tls"), not(feature = "rustls-tls"))
 ))]
-fn build_tls_connector(_config: &CortexConfig, _url: &str) -> CortexResult<Option<Connector>> {
+fn build_tls_connector(_config: &CortexConfig, url: &str) -> CortexResult<Option<Connector>> {
+    let _: http::Uri =
+        url.parse()
+            .map_err(|e: http::uri::InvalidUri| CortexError::ConnectionFailed {
+                url: url.to_string(),
+                reason: format!("Invalid URL: {e}"),
+            })?;
     Ok(None)
 }
 
@@ -300,6 +313,10 @@ impl CortexClient {
     ///
     /// The Cortex service must be running on the local machine.
     /// TLS is configured based on the [`CortexConfig`] settings.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn connect(config: &CortexConfig) -> CortexResult<Self> {
         let url = &config.cortex_url;
         let rpc_timeout = Duration::from_secs(config.timeouts.rpc_timeout_secs);
@@ -310,7 +327,7 @@ impl CortexClient {
             url.parse()
                 .map_err(|e: http::uri::InvalidUri| CortexError::ConnectionFailed {
                     url: url.clone(),
-                    reason: format!("Invalid URL: {}", e),
+                    reason: format!("Invalid URL: {e}"),
                 })?;
 
         let connect_fut = connect_websocket(uri, connector);
@@ -320,7 +337,7 @@ impl CortexClient {
             .map_err(|_| CortexError::Timeout { seconds: 5 })?
             .map_err(|e| CortexError::ConnectionFailed {
                 url: url.clone(),
-                reason: format!("WebSocket connection failed: {}", e),
+                reason: format!("WebSocket connection failed: {e}"),
             })?;
 
         tracing::info!(url, status = %response.status(), "Connected to Cortex API");
@@ -366,6 +383,10 @@ impl CortexClient {
     /// Connect to the Cortex API using just a URL (convenience for simple use cases).
     ///
     /// Uses default timeouts and localhost TLS settings.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn connect_url(url: &str) -> CortexResult<Self> {
         let config = CortexConfig {
             client_id: String::new(),
@@ -400,110 +421,30 @@ impl CortexClient {
 
                 match msg {
                     Some(Ok(Message::Text(text))) => {
-                        tracing::debug!(raw = %text, "Reader loop received message");
-
-                        let value: serde_json::Value = match serde_json::from_str(&text) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::warn!("Failed to parse WebSocket message as JSON: {}", e);
-                                continue;
-                            }
-                        };
-
-                        // Check if this is an RPC response (has an `id` field)
-                        if let Some(id) = value.get("id").and_then(|v| v.as_u64()) {
-                            let response: std::result::Result<CortexResponse, _> =
-                                serde_json::from_value(value);
-
-                            let mut pending = pending_responses.lock().await;
-                            if let Some(tx) = pending.remove(&id) {
-                                match response {
-                                    Ok(resp) => {
-                                        let result = if let Some(error) = resp.error {
-                                            tracing::error!(
-                                                id,
-                                                code = error.code,
-                                                message = %error.message,
-                                                "Cortex API error in RPC response",
-                                            );
-                                            Err(CortexError::from_api_error(
-                                                error.code,
-                                                error.message,
-                                            ))
-                                        } else {
-                                            resp.result.ok_or_else(|| CortexError::ProtocolError {
-                                                reason: "Response has no result or error".into(),
-                                            })
-                                        };
-                                        let _ = tx.send(result);
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(Err(CortexError::ProtocolError {
-                                            reason: format!("Failed to parse RPC response: {}", e),
-                                        }));
-                                    }
-                                }
-                            } else {
-                                tracing::debug!(id, "Received response for unknown request ID");
-                            }
-                            continue;
-                        }
-
-                        // Not an RPC response — route as a stream data event.
-                        let target_sender = if let Ok(guard) = stream_senders.lock() {
-                            guard.as_ref().and_then(|senders| {
-                                senders.iter().find_map(|(key, tx)| {
-                                    value.get(*key).is_some().then(|| (*key, tx.clone()))
-                                })
-                            })
-                        } else {
-                            None
-                        };
-
-                        if let Some((stream_key, tx)) = target_sender {
-                            let counter = stream_dispatch_counters
-                                .lock()
-                                .ok()
-                                .and_then(|counters| counters.get(stream_key).cloned());
-
-                            match tx.try_send(value) {
-                                Ok(()) => {
-                                    if let Some(counter) = counter {
-                                        counter.delivered.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                }
-                                Err(TrySendError::Full(_)) => {
-                                    if let Some(counter) = counter {
-                                        counter.dropped_full.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                }
-                                Err(TrySendError::Closed(_)) => {
-                                    if let Some(counter) = counter {
-                                        counter.dropped_closed.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                }
-                            }
-                        }
+                        Self::handle_text_message(
+                            &text,
+                            &pending_responses,
+                            &stream_senders,
+                            &stream_dispatch_counters,
+                        )
+                        .await;
                     }
                     Some(Ok(Message::Close(_))) => {
                         tracing::info!("Cortex WebSocket closed by server");
-                        let mut pending = pending_responses.lock().await;
-                        for (_, tx) in pending.drain() {
-                            let _ = tx.send(Err(CortexError::ConnectionLost {
-                                reason: "Cortex WebSocket closed".into(),
-                            }));
-                        }
+                        Self::drain_pending_connection_lost(
+                            &pending_responses,
+                            "Cortex WebSocket closed",
+                        )
+                        .await;
                         break;
                     }
                     Some(Err(e)) => {
                         tracing::warn!("WebSocket read error: {}", e);
-                        let mut pending = pending_responses.lock().await;
-                        for (_, tx) in pending.drain() {
-                            let _ = tx.send(Err(CortexError::WebSocket(format!(
-                                "WebSocket error: {}",
-                                e
-                            ))));
-                        }
+                        Self::drain_pending_websocket(
+                            &pending_responses,
+                            format!("WebSocket error: {e}"),
+                        )
+                        .await;
                         break;
                     }
                     None => {
@@ -516,16 +457,144 @@ impl CortexClient {
                 }
             }
 
-            let mut pending = pending_responses.lock().await;
-            for (_, tx) in pending.drain() {
-                let _ = tx.send(Err(CortexError::ConnectionLost {
-                    reason: "Reader loop stopped".into(),
-                }));
-            }
+            Self::drain_pending_connection_lost(&pending_responses, "Reader loop stopped").await;
 
             tracing::debug!("Reader loop exiting");
             running.store(false, Ordering::SeqCst);
         })
+    }
+
+    async fn handle_text_message(
+        text: &str,
+        pending_responses: &Arc<Mutex<HashMap<u64, PendingResponse>>>,
+        stream_senders: &Arc<std::sync::Mutex<Option<StreamSenders>>>,
+        stream_dispatch_counters: &Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+    ) {
+        tracing::debug!(raw = %text, "Reader loop received message");
+
+        let value: serde_json::Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to parse WebSocket message as JSON: {}", e);
+                return;
+            }
+        };
+
+        if value
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .is_some()
+        {
+            let _ = Self::dispatch_rpc_response(value, pending_responses).await;
+            return;
+        }
+
+        Self::dispatch_stream_event(value, stream_senders, stream_dispatch_counters);
+    }
+
+    async fn dispatch_rpc_response(
+        value: serde_json::Value,
+        pending_responses: &Arc<Mutex<HashMap<u64, PendingResponse>>>,
+    ) -> bool {
+        let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
+            return false;
+        };
+
+        let response: std::result::Result<CortexResponse, _> = serde_json::from_value(value);
+
+        let mut pending = pending_responses.lock().await;
+        if let Some(tx) = pending.remove(&id) {
+            match response {
+                Ok(resp) => {
+                    let result = if let Some(error) = resp.error {
+                        tracing::error!(
+                            id,
+                            code = error.code,
+                            message = %error.message,
+                            "Cortex API error in RPC response",
+                        );
+                        Err(CortexError::from_api_error(error.code, error.message))
+                    } else {
+                        resp.result.ok_or_else(|| CortexError::ProtocolError {
+                            reason: "Response has no result or error".into(),
+                        })
+                    };
+                    let _ = tx.send(result);
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(CortexError::ProtocolError {
+                        reason: format!("Failed to parse RPC response: {e}"),
+                    }));
+                }
+            }
+        } else {
+            tracing::debug!(id, "Received response for unknown request ID");
+        }
+
+        true
+    }
+
+    fn dispatch_stream_event(
+        value: serde_json::Value,
+        stream_senders: &Arc<std::sync::Mutex<Option<StreamSenders>>>,
+        stream_dispatch_counters: &Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+    ) {
+        let target_sender = if let Ok(guard) = stream_senders.lock() {
+            guard.as_ref().and_then(|senders| {
+                senders
+                    .iter()
+                    .find_map(|(key, tx)| value.get(*key).is_some().then(|| (*key, tx.clone())))
+            })
+        } else {
+            None
+        };
+
+        if let Some((stream_key, tx)) = target_sender {
+            let counter = stream_dispatch_counters
+                .lock()
+                .ok()
+                .and_then(|counters| counters.get(stream_key).cloned());
+
+            match tx.try_send(value) {
+                Ok(()) => {
+                    if let Some(counter) = counter {
+                        counter.delivered.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Err(TrySendError::Full(_)) => {
+                    if let Some(counter) = counter {
+                        counter.dropped_full.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Err(TrySendError::Closed(_)) => {
+                    if let Some(counter) = counter {
+                        counter.dropped_closed.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+
+    async fn drain_pending_connection_lost(
+        pending_responses: &Arc<Mutex<HashMap<u64, PendingResponse>>>,
+        reason: &str,
+    ) {
+        let mut pending = pending_responses.lock().await;
+        for (_, tx) in pending.drain() {
+            let _ = tx.send(Err(CortexError::ConnectionLost {
+                reason: reason.to_string(),
+            }));
+        }
+    }
+
+    async fn drain_pending_websocket(
+        pending_responses: &Arc<Mutex<HashMap<u64, PendingResponse>>>,
+        reason: String,
+    ) {
+        let mut pending = pending_responses.lock().await;
+        for (_, tx) in pending.drain() {
+            let _ = tx.send(Err(CortexError::WebSocket(reason.clone())));
+        }
     }
 
     // ─── Core RPC ───────────────────────────────────────────────────────
@@ -540,7 +609,7 @@ impl CortexClient {
         let request = CortexRequest::new(id, method, params);
 
         let json = serde_json::to_string(&request).map_err(|e| CortexError::ProtocolError {
-            reason: format!("serialize error: {}", e),
+            reason: format!("serialize error: {e}"),
         })?;
 
         tracing::debug!(method, id, json = %json, "Sending Cortex request");
@@ -560,7 +629,7 @@ impl CortexClient {
         if let Err(e) = send_result {
             let mut pending = self.pending_responses.lock().await;
             pending.remove(&id);
-            return Err(CortexError::WebSocket(format!("Send error: {}", e)));
+            return Err(CortexError::WebSocket(format!("Send error: {e}")));
         }
 
         // Wait for the reader loop to deliver the response
@@ -609,11 +678,13 @@ impl CortexClient {
     fn current_epoch_millis() -> CortexResult<u64> {
         let system_duration = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
             CortexError::ProtocolError {
-                reason: format!("System clock is before UNIX epoch: {}", e),
+                reason: format!("System clock is before UNIX epoch: {e}"),
             }
         })?;
 
-        Ok(system_duration.as_millis() as u64)
+        u64::try_from(system_duration.as_millis()).map_err(|_| CortexError::ProtocolError {
+            reason: "System time in milliseconds exceeds u64 range".into(),
+        })
     }
 
     fn sync_with_headset_clock_params_with_times(
@@ -978,12 +1049,20 @@ impl CortexClient {
     /// Query Cortex service version and build info.
     ///
     /// No authentication required. Useful as a health check.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_cortex_info(&self) -> CortexResult<serde_json::Value> {
         self.call(Methods::GET_CORTEX_INFO, serde_json::json!({}))
             .await
     }
 
     /// Check if the application has been granted access rights.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn has_access_right(
         &self,
         client_id: &str,
@@ -1001,18 +1080,22 @@ impl CortexClient {
 
         Ok(result
             .get("accessGranted")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false))
     }
 
     /// Get the currently logged-in Emotiv user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_user_login(&self) -> CortexResult<Vec<UserLoginInfo>> {
         let result = self
             .call(Methods::GET_USER_LOGIN, serde_json::json!({}))
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse user login info: {}", e),
+            reason: format!("Failed to parse user login info: {e}"),
         })
     }
 
@@ -1021,6 +1104,10 @@ impl CortexClient {
     /// Performs: `getCortexInfo` → `requestAccess` → `authorize`.
     ///
     /// Returns the cortex token needed for all subsequent operations.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn authenticate(&self, client_id: &str, client_secret: &str) -> CortexResult<String> {
         // Step 0: getCortexInfo — verify API is alive
         let cortex_info_ok = match self.get_cortex_info().await {
@@ -1099,6 +1186,10 @@ impl CortexClient {
     /// Generate a new cortex token (or refresh an existing one).
     ///
     /// Can be used to obtain a fresh token without the full `requestAccess` → `authorize` flow.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn generate_new_token(
         &self,
         cortex_token: &str,
@@ -1119,13 +1210,17 @@ impl CortexClient {
         result
             .get("cortexToken")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .ok_or_else(|| CortexError::ProtocolError {
                 reason: "generateNewToken response missing cortexToken".into(),
             })
     }
 
     /// Get information about the current user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_user_info(&self, cortex_token: &str) -> CortexResult<serde_json::Value> {
         self.call(
             Methods::GET_USER_INFO,
@@ -1137,6 +1232,10 @@ impl CortexClient {
     }
 
     /// Get information about the license used by the application.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_license_info(&self, cortex_token: &str) -> CortexResult<serde_json::Value> {
         self.call(
             Methods::GET_LICENSE_INFO,
@@ -1150,6 +1249,10 @@ impl CortexClient {
     // ─── Headset Management ─────────────────────────────────────────────
 
     /// Query available headsets.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_headsets(
         &self,
         options: QueryHeadsetsOptions,
@@ -1163,7 +1266,7 @@ impl CortexClient {
 
         let headsets: Vec<HeadsetInfo> =
             serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-                reason: format!("Failed to parse headset list: {}", e),
+                reason: format!("Failed to parse headset list: {e}"),
             })?;
 
         tracing::info!(count = headsets.len(), "Queried headsets");
@@ -1172,6 +1275,10 @@ impl CortexClient {
     }
 
     /// Connect to a specific headset via the Cortex service.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn connect_headset(&self, headset_id: &str) -> CortexResult<()> {
         self.call(
             Methods::CONTROL_DEVICE,
@@ -1187,6 +1294,10 @@ impl CortexClient {
     }
 
     /// Disconnect a headset from the Cortex service.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn disconnect_headset(&self, headset_id: &str) -> CortexResult<()> {
         self.call(
             Methods::CONTROL_DEVICE,
@@ -1202,6 +1313,10 @@ impl CortexClient {
     }
 
     /// Trigger headset scanning / refresh.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn refresh_headsets(&self) -> CortexResult<()> {
         self.call(
             Methods::CONTROL_DEVICE,
@@ -1223,6 +1338,10 @@ impl CortexClient {
     /// Returns: typed clock sync details from Cortex.
     /// Errors: session/headset/transport errors from Cortex are propagated.
     /// Related methods: [`Self::query_headsets`], [`Self::connect_headset`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn sync_with_headset_clock(
         &self,
         headset_id: &str,
@@ -1235,11 +1354,15 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse headset clock sync result: {}", e),
+            reason: format!("Failed to parse headset clock sync result: {e}"),
         })
     }
 
     /// Manage EEG channel mapping configurations for an EPOC Flex headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn config_mapping(
         &self,
         cortex_token: &str,
@@ -1257,7 +1380,7 @@ impl CortexClient {
                 }
                 let parsed: ValueEnvelope =
                     serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-                        reason: format!("Failed to parse configMapping value response: {}", e),
+                        reason: format!("Failed to parse configMapping value response: {e}"),
                     })?;
                 Ok(ConfigMappingResponse::Value {
                     message: parsed.message,
@@ -1272,7 +1395,7 @@ impl CortexClient {
                 }
                 let parsed: ListEnvelope =
                     serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-                        reason: format!("Failed to parse configMapping get response: {}", e),
+                        reason: format!("Failed to parse configMapping get response: {e}"),
                     })?;
                 Ok(ConfigMappingResponse::List {
                     message: parsed.message,
@@ -1287,7 +1410,7 @@ impl CortexClient {
                 }
                 let parsed: DeleteEnvelope =
                     serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-                        reason: format!("Failed to parse configMapping delete response: {}", e),
+                        reason: format!("Failed to parse configMapping delete response: {e}"),
                     })?;
                 Ok(ConfigMappingResponse::Deleted {
                     message: parsed.message,
@@ -1302,13 +1425,19 @@ impl CortexClient {
     /// Cortex method: `updateHeadset`
     /// Required state: authenticated token.
     /// Parameters:
+    ///
     /// - `headset_id`: headset identifier
     /// - `setting`: device-specific JSON object (for example:
     ///   `{"mode": "EPOC", "eegRate": 256, "memsRate": 64}`)
+    ///
     /// Returns: raw JSON-RPC result payload from Cortex.
     /// Errors: validation/headset/license/auth errors are propagated.
     /// Retry/idempotency: safe to retry when the same `setting` is reused.
     /// Related methods: [`Self::update_headset_custom_info`], [`Self::query_headsets`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_headset(
         &self,
         cortex_token: &str,
@@ -1331,12 +1460,18 @@ impl CortexClient {
     /// Cortex method: `updateHeadsetCustomInfo`
     /// Required state: authenticated token.
     /// Parameters:
+    ///
     /// - `headset_id`: headset identifier
     /// - `headband_position`: optional position string
     /// - `custom_name`: optional display name
+    ///
     /// Returns: raw JSON-RPC result payload from Cortex.
     /// Errors: validation/headset/auth errors are propagated.
     /// Related methods: [`Self::update_headset`], [`Self::query_headsets`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_headset_custom_info(
         &self,
         cortex_token: &str,
@@ -1359,6 +1494,10 @@ impl CortexClient {
     // ─── Session Management ─────────────────────────────────────────────
 
     /// Create a session for a headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn create_session(
         &self,
         cortex_token: &str,
@@ -1377,7 +1516,7 @@ impl CortexClient {
 
         let session: SessionInfo =
             serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-                reason: format!("Failed to parse session info: {}", e),
+                reason: format!("Failed to parse session info: {e}"),
             })?;
 
         tracing::info!(session_id = %session.id, "Session created");
@@ -1385,6 +1524,10 @@ impl CortexClient {
     }
 
     /// Query existing sessions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_sessions(&self, cortex_token: &str) -> CortexResult<Vec<SessionInfo>> {
         let result = self
             .call(
@@ -1396,7 +1539,7 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse sessions: {}", e),
+            reason: format!("Failed to parse sessions: {e}"),
         })
     }
 
@@ -1408,6 +1551,10 @@ impl CortexClient {
     /// Errors: session/auth/transport errors are propagated.
     /// Retry/idempotency: generally safe to retry close on transient failures.
     /// Related methods: [`Self::create_session`], [`Self::query_sessions`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn close_session(&self, cortex_token: &str, session_id: &str) -> CortexResult<()> {
         self.call(
             Methods::UPDATE_SESSION,
@@ -1426,6 +1573,10 @@ impl CortexClient {
     // ─── Data Streams ───────────────────────────────────────────────────
 
     /// Subscribe to one or more data streams.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn subscribe_streams(
         &self,
         cortex_token: &str,
@@ -1447,6 +1598,10 @@ impl CortexClient {
     }
 
     /// Unsubscribe from one or more data streams.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn unsubscribe_streams(
         &self,
         cortex_token: &str,
@@ -1470,6 +1625,10 @@ impl CortexClient {
     // ─── Records ────────────────────────────────────────────────────────
 
     /// Start a new recording.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn create_record(
         &self,
         cortex_token: &str,
@@ -1497,7 +1656,7 @@ impl CortexClient {
 
         let record: RecordInfo =
             serde_json::from_value(record_value).map_err(|e| CortexError::ProtocolError {
-                reason: format!("Failed to parse record info: {}", e),
+                reason: format!("Failed to parse record info: {e}"),
             })?;
 
         tracing::info!(record_id = %record.uuid, "Recording started");
@@ -1505,6 +1664,10 @@ impl CortexClient {
     }
 
     /// Stop an active recording.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn stop_record(
         &self,
         cortex_token: &str,
@@ -1530,7 +1693,7 @@ impl CortexClient {
 
         let record: RecordInfo =
             serde_json::from_value(record_value).map_err(|e| CortexError::ProtocolError {
-                reason: format!("Failed to parse record info: {}", e),
+                reason: format!("Failed to parse record info: {e}"),
             })?;
 
         tracing::info!(record_id = %record.uuid, "Recording stopped");
@@ -1538,6 +1701,10 @@ impl CortexClient {
     }
 
     /// Query recorded sessions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_records(
         &self,
         cortex_token: &str,
@@ -1565,11 +1732,15 @@ impl CortexClient {
             .unwrap_or(serde_json::Value::Array(vec![]));
 
         serde_json::from_value(records).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse records: {}", e),
+            reason: format!("Failed to parse records: {e}"),
         })
     }
 
     /// Export a recording to CSV or EDF format.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn export_record(
         &self,
         cortex_token: &str,
@@ -1598,6 +1769,10 @@ impl CortexClient {
     }
 
     /// Update a recording's metadata (title, description, tags).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_record_with(
         &self,
         cortex_token: &str,
@@ -1629,12 +1804,16 @@ impl CortexClient {
                 })?;
 
         serde_json::from_value(record_value).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse record info: {}", e),
+            reason: format!("Failed to parse record info: {e}"),
         })
     }
 
     /// Update a recording's metadata (title, description, tags).
     #[deprecated(note = "Use `update_record_with` and `UpdateRecordRequest` instead.")]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_record(
         &self,
         cortex_token: &str,
@@ -1647,12 +1826,16 @@ impl CortexClient {
             record_id: record_id.to_string(),
             title: title.map(ToString::to_string),
             description: description.map(ToString::to_string),
-            tags: tags.map(|values| values.to_vec()),
+            tags: tags.map(<[std::string::String]>::to_vec),
         };
         self.update_record_with(cortex_token, &request).await
     }
 
     /// Delete one or more recordings.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn delete_record(
         &self,
         cortex_token: &str,
@@ -1669,6 +1852,10 @@ impl CortexClient {
     }
 
     /// Get detailed information for specific records by their IDs.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_record_infos(
         &self,
         cortex_token: &str,
@@ -1687,6 +1874,10 @@ impl CortexClient {
     /// Configure the opt-out setting for data sharing.
     ///
     /// Use `status: "get"` to query, `status: "set"` with `new_opt_out` to change.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn config_opt_out(
         &self,
         cortex_token: &str,
@@ -1706,6 +1897,10 @@ impl CortexClient {
     }
 
     /// Request to download recorded data from the Emotiv cloud.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn download_record(
         &self,
         cortex_token: &str,
@@ -1724,6 +1919,10 @@ impl CortexClient {
     // ─── Markers ────────────────────────────────────────────────────────
 
     /// Inject a time-stamped marker during an active recording.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn inject_marker(
         &self,
         cortex_token: &str,
@@ -1735,7 +1934,12 @@ impl CortexClient {
     ) -> CortexResult<MarkerInfo> {
         let epoch_ms = match time {
             Some(value) => value,
-            None => Self::current_epoch_millis()? as f64,
+            None => Self::current_epoch_millis()?
+                .to_string()
+                .parse::<f64>()
+                .map_err(|e| CortexError::ProtocolError {
+                    reason: format!("Failed to convert epoch milliseconds to f64: {e}"),
+                })?,
         };
 
         let params = serde_json::json!({
@@ -1759,7 +1963,7 @@ impl CortexClient {
 
         let marker: MarkerInfo =
             serde_json::from_value(marker_value).map_err(|e| CortexError::ProtocolError {
-                reason: format!("Failed to parse marker info: {}", e),
+                reason: format!("Failed to parse marker info: {e}"),
             })?;
 
         tracing::debug!(marker_id = %marker.uuid, label, "Marker injected");
@@ -1767,6 +1971,10 @@ impl CortexClient {
     }
 
     /// Update a marker to convert it from an instance marker to an interval marker.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_marker(
         &self,
         cortex_token: &str,
@@ -1792,6 +2000,10 @@ impl CortexClient {
     // ─── Subjects ────────────────────────────────────────────────────────
 
     /// Create a new subject.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn create_subject_with(
         &self,
         cortex_token: &str,
@@ -1805,13 +2017,17 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse subject info: {}", e),
+            reason: format!("Failed to parse subject info: {e}"),
         })
     }
 
     /// Create a new subject.
     #[deprecated(note = "Use `create_subject_with` and `SubjectRequest` instead.")]
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn create_subject(
         &self,
         cortex_token: &str,
@@ -1830,12 +2046,16 @@ impl CortexClient {
             country_code: country_code.map(ToString::to_string),
             state: state.map(ToString::to_string),
             city: city.map(ToString::to_string),
-            attributes: attributes.map(|values| values.to_vec()),
+            attributes: attributes.map(<[serde_json::Value]>::to_vec),
         };
         self.create_subject_with(cortex_token, &request).await
     }
 
     /// Update an existing subject's information.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_subject_with(
         &self,
         cortex_token: &str,
@@ -1849,13 +2069,17 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse subject info: {}", e),
+            reason: format!("Failed to parse subject info: {e}"),
         })
     }
 
     /// Update an existing subject's information.
     #[deprecated(note = "Use `update_subject_with` and `SubjectRequest` instead.")]
     #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn update_subject(
         &self,
         cortex_token: &str,
@@ -1874,12 +2098,16 @@ impl CortexClient {
             country_code: country_code.map(ToString::to_string),
             state: state.map(ToString::to_string),
             city: city.map(ToString::to_string),
-            attributes: attributes.map(|values| values.to_vec()),
+            attributes: attributes.map(<[serde_json::Value]>::to_vec),
         };
         self.update_subject_with(cortex_token, &request).await
     }
 
     /// Delete one or more subjects.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn delete_subjects(
         &self,
         cortex_token: &str,
@@ -1897,7 +2125,11 @@ impl CortexClient {
 
     /// Query subjects with filtering, sorting, and pagination.
     ///
-    /// Returns a tuple of (subjects, total_count).
+    /// Returns a tuple of (subjects, `total_count`).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_subjects_with(
         &self,
         cortex_token: &str,
@@ -1910,7 +2142,11 @@ impl CortexClient {
             )
             .await?;
 
-        let count = result.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+        let count = result
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0);
 
         let subjects_value = result
             .get("subjects")
@@ -1919,7 +2155,7 @@ impl CortexClient {
 
         let subjects: Vec<SubjectInfo> =
             serde_json::from_value(subjects_value).map_err(|e| CortexError::ProtocolError {
-                reason: format!("Failed to parse subjects: {}", e),
+                reason: format!("Failed to parse subjects: {e}"),
             })?;
 
         Ok((subjects, count))
@@ -1927,8 +2163,12 @@ impl CortexClient {
 
     /// Query subjects with filtering, sorting, and pagination.
     ///
-    /// Returns a tuple of (subjects, total_count).
+    /// Returns a tuple of (subjects, `total_count`).
     #[deprecated(note = "Use `query_subjects_with` and `QuerySubjectsRequest` instead.")]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_subjects(
         &self,
         cortex_token: &str,
@@ -1947,6 +2187,10 @@ impl CortexClient {
     }
 
     /// Get the list of valid demographic attributes.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_demographic_attributes(
         &self,
         cortex_token: &str,
@@ -1961,13 +2205,17 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse demographic attributes: {}", e),
+            reason: format!("Failed to parse demographic attributes: {e}"),
         })
     }
 
     // ─── Profiles ───────────────────────────────────────────────────────
 
     /// List all profiles for the current user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn query_profiles(&self, cortex_token: &str) -> CortexResult<Vec<ProfileInfo>> {
         let result = self
             .call(
@@ -1979,12 +2227,16 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse profiles: {}", e),
+            reason: format!("Failed to parse profiles: {e}"),
         })
     }
 
     /// Get the profile currently loaded for a headset.
     ///
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_current_profile(
         &self,
         cortex_token: &str,
@@ -2002,13 +2254,17 @@ impl CortexClient {
 
         let profile: CurrentProfileInfo =
             serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-                reason: format!("Failed to parse current profile info: {}", e),
+                reason: format!("Failed to parse current profile info: {e}"),
             })?;
 
         Ok(profile)
     }
 
     /// Manage a profile (create, load, unload, save, rename, delete).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn setup_profile(
         &self,
         cortex_token: &str,
@@ -2039,6 +2295,10 @@ impl CortexClient {
     ///
     /// This unloads any currently loaded profile and loads a blank guest profile,
     /// useful for starting fresh without trained data.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn load_guest_profile(
         &self,
         cortex_token: &str,
@@ -2060,6 +2320,10 @@ impl CortexClient {
     // ─── BCI / Training ─────────────────────────────────────────────────
 
     /// Get detection info for a specific detection type.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_detection_info(
         &self,
         detection: DetectionType,
@@ -2074,11 +2338,15 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse detection info: {}", e),
+            reason: format!("Failed to parse detection info: {e}"),
         })
     }
 
     /// Control the training lifecycle for mental commands or facial expressions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn training(
         &self,
         cortex_token: &str,
@@ -2101,6 +2369,10 @@ impl CortexClient {
     }
 
     /// Get or set the active mental command actions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_active_action(
         &self,
         cortex_token: &str,
@@ -2122,6 +2394,10 @@ impl CortexClient {
     }
 
     /// Get or set the mental command action sensitivity.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_action_sensitivity(
         &self,
         cortex_token: &str,
@@ -2143,6 +2419,10 @@ impl CortexClient {
     }
 
     /// Get the mental command brain map.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_brain_map(
         &self,
         cortex_token: &str,
@@ -2167,6 +2447,10 @@ impl CortexClient {
     /// Related methods:
     /// [`Self::mental_command_training_threshold_with_params`],
     /// [`Self::mental_command_training_threshold_for_profile`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_training_threshold(
         &self,
         cortex_token: &str,
@@ -2186,6 +2470,10 @@ impl CortexClient {
     ///
     /// Set `status` to `Some("set")` and provide `value` to update.
     /// Use `status = None` (or `Some("get")`) to read the threshold.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_training_threshold_for_profile(
         &self,
         cortex_token: &str,
@@ -2204,6 +2492,10 @@ impl CortexClient {
     }
 
     /// Get or set the mental command training threshold using a typed request.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn mental_command_training_threshold_with_request(
         &self,
         cortex_token: &str,
@@ -2227,6 +2519,10 @@ impl CortexClient {
     /// Exactly one of `session_id` or `profile` must be provided.
     /// If `status` is `None`, this infers `"get"` when `value` is `None`,
     /// otherwise `"set"`.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     #[deprecated(
         note = "Use `mental_command_training_threshold_with_request` and `MentalCommandTrainingThresholdRequest` instead."
     )]
@@ -2251,6 +2547,10 @@ impl CortexClient {
     /// Get a list of trained actions for a profile's detection type.
     ///
     /// Specify either `profile` (by name) or `session` (by ID), not both.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_trained_signature_actions(
         &self,
         cortex_token: &str,
@@ -2275,11 +2575,15 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse trained signature actions: {}", e),
+            reason: format!("Failed to parse trained signature actions: {e}"),
         })
     }
 
     /// Get the duration of a training session.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn get_training_time(
         &self,
         cortex_token: &str,
@@ -2298,7 +2602,7 @@ impl CortexClient {
             .await?;
 
         serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
-            reason: format!("Failed to parse training time: {}", e),
+            reason: format!("Failed to parse training time: {e}"),
         })
     }
 
@@ -2306,6 +2610,10 @@ impl CortexClient {
     ///
     /// Use `status: "get"` to query, `status: "set"` with `signature` to change.
     /// Specify either `profile` or `session`, not both.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn facial_expression_signature_type_with(
         &self,
         cortex_token: &str,
@@ -2322,6 +2630,10 @@ impl CortexClient {
     ///
     /// Use `status: "get"` to query, `status: "set"` with `signature` to change.
     /// Specify either `profile` or `session`, not both.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     #[deprecated(
         note = "Use `facial_expression_signature_type_with` and `FacialExpressionSignatureTypeRequest` instead."
     )]
@@ -2348,6 +2660,10 @@ impl CortexClient {
     /// Use `status: "get"` to query, `status: "set"` with `value` to change.
     /// Specify either `profile` or `session`, not both.
     /// The `value` range is 0–1000.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn facial_expression_threshold_with(
         &self,
         cortex_token: &str,
@@ -2365,6 +2681,10 @@ impl CortexClient {
     /// Use `status: "get"` to query, `status: "set"` with `value` to change.
     /// Specify either `profile` or `session`, not both.
     /// The `value` range is 0–1000.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     #[deprecated(
         note = "Use `facial_expression_threshold_with` and `FacialExpressionThresholdRequest` instead."
     )]
@@ -2405,6 +2725,10 @@ impl CortexClient {
     }
 
     /// Close the WebSocket connection.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub async fn disconnect(&mut self) -> CortexResult<()> {
         self.stop_reader().await;
 
@@ -2583,7 +2907,7 @@ mod tests {
             "token",
             ConfigMappingRequest::Update {
                 uuid: "uuid-1".into(),
-                name: Some("".into()),
+                name: Some(String::new()),
                 mappings: None,
             },
         );

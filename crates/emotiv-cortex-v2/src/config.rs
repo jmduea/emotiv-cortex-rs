@@ -263,6 +263,10 @@ impl CortexConfig {
     /// Required: `EMOTIV_CLIENT_ID`, `EMOTIV_CLIENT_SECRET`
     ///
     /// Optional: `EMOTIV_CORTEX_URL`, `EMOTIV_LICENSE`
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub fn from_env() -> CortexResult<Self> {
         let client_id =
             std::env::var("EMOTIV_CLIENT_ID").map_err(|_| CortexError::ConfigError {
@@ -289,6 +293,10 @@ impl CortexConfig {
     ///
     /// Environment variables take precedence over file values for
     /// `client_id`, `client_secret`, `cortex_url`, and `license`.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub fn from_file(path: impl AsRef<Path>) -> CortexResult<Self> {
         let path = path.as_ref();
         let contents = std::fs::read_to_string(path).map_err(|e| CortexError::ConfigError {
@@ -321,6 +329,10 @@ impl CortexConfig {
     /// 4. `~/.config/emotiv-cortex/cortex.toml`
     ///
     /// Falls back to environment-variable-only config if no file is found.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
     pub fn discover(explicit_path: Option<&Path>) -> CortexResult<Self> {
         // 1. Explicit path
         if let Some(path) = explicit_path {
@@ -357,6 +369,7 @@ impl CortexConfig {
     /// Insecure TLS is always allowed for `localhost` and `127.0.0.1`
     /// (the Cortex service uses a self-signed cert). For other hosts,
     /// `allow_insecure_tls` must be explicitly set.
+    #[must_use]
     pub fn should_accept_invalid_certs(&self) -> bool {
         if is_localhost(&self.cortex_url) {
             return true;
@@ -502,7 +515,7 @@ mod tests {
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         ENV_LOCK
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn write_minimal_config(path: &Path, id: &str, secret: &str, url: &str) {
@@ -510,11 +523,10 @@ mod tests {
             path,
             format!(
                 r#"
-client_id = "{}"
-client_secret = "{}"
-cortex_url = "{}"
-"#,
-                id, secret, url
+client_id = "{id}"
+client_secret = "{secret}"
+cortex_url = "{url}"
+"#
             ),
         )
         .unwrap();
