@@ -2,8 +2,15 @@
 
 Rust workspace for Emotiv Cortex v2 tooling and integrations.
 
+## Acknowledgments and affiliation
+
+- This project builds on and interoperates with the Emotiv Cortex API and ecosystem.
+- Emotiv and Emotiv Cortex are trademarks of Emotiv, Inc.
+- This repository is an independent, community-maintained project and is **not** created by,
+  affiliated with, sponsored by, or endorsed by Emotiv.
+
 [![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
-[Coverage Reports](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+[![Test Coverage](https://codecov.io/gh/jmduea/emotiv-cortex-rs/graph/badge.svg?branch=main)](https://codecov.io/gh/jmduea/emotiv-cortex-rs)
 
 ## Crates
 
