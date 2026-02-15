@@ -120,3 +120,19 @@ For detailed guidance, see:
 - `skills/m01-ownership/SKILL.md` - Ownership concepts
 - `skills/m06-error-handling/SKILL.md` - Error patterns
 - `skills/m07-concurrency/SKILL.md` - Concurrency patterns
+
+## RTK Command Policy
+
+- Prefer `rtk` as the default proxy for verbose shell commands.
+- Always prefix each command in chains as well (e.g., `rtk git add . && rtk git commit -m "msg"`).
+- RTK passthrough is safe when no dedicated filter exists.
+- Before relying on RTK in a new environment, verify with:
+  - `rtk --version`
+  - `rtk gain`
+- Prefer RTK wrappers for common high-volume output commands:
+  - `git` (`status`, `log`, `diff`, `show`, `add`, `commit`, `push`, `pull`)
+  - `cargo` (`check`, `build`, `clippy`, `test`)
+  - file/search (`ls`, `read`, `grep`, `find`)
+  - `gh` (`pr`, `issue`, `run`), `docker`, `kubectl`
+- In Copilot/VS Code workflows, prefer hook-routed enforcement where available.
+- On Windows + VS Code agent workflows, if command rewrite hooks are not active, use explicit `rtk ...` command prefixes by default.
