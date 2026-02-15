@@ -1,6 +1,4 @@
-# Project Agents
-
-See `.rust-skills/AGENTS.md` for Rust development guidelines.
+# Project Agent Guidelines
 
 ## Default Project Settings
 

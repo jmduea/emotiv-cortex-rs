@@ -1,0 +1,33 @@
+{
+    "hooks": {
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "bash ./.github/hooks/rtk-rewrite.sh"
+                    }
+                ]
+            },
+            {
+                "matcher": "PowerShell",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ./.github/hooks/rtk-rewrite.ps1"
+                    }
+                ]
+            },
+            {
+                "matcher": "Terminal",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ./.github/hooks/rtk-rewrite.ps1 || bash ./.github/hooks/rtk-rewrite.sh"
+                    }
+                ]
+            }
+        ]
+    }
+}
