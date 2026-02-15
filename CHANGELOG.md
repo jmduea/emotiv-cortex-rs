@@ -32,3 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workspace/toolchain baseline updated to edition `2024` and rust-version `1.85`.
 - CI now uses explicit feature matrix (`rustls`, `native-tls`, CLI no-default-features, CLI LSL on Linux), rustfmt check, and curated blocking clippy gate with pedantic reporting non-blocking.
 - Bumped crate versions to `0.3.0` for `emotiv-cortex-v2` and `emotiv-cortex-cli`.
+- CLI LSL metadata now aligns stream/channel naming to XDF conventions where defined:
+  - `EmotivMetrics` stream `type` changed from empty to `Metrics`.
+  - `EmotivDeviceQuality` and `EmotivEEGQuality` stream `type` changed from `EEG` to `Quality`.
+  - EEG channel metadata now emits `location_label` plus nested `location/{X,Y,Z}` coordinates and `cap/labelscheme=10-20`.
+  - Channel `type` values now use normalized names (`EEG`, `OrientationA..D`, `Stim`, and `Misc` fallback).

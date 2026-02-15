@@ -8,19 +8,21 @@
 //! - `desc/channels/channel/label`
 //! - `desc/channels/channel/unit`
 //! - `desc/channels/channel/type`
-//! - `desc/channels/channel/location` (EEG channels where available)
+//! - `desc/channels/channel/location_label` (EEG 10-20 label where available)
+//! - `desc/channels/channel/location/{X,Y,Z}` (EEG coordinates in millimeters)
 //! - `desc/acquisition/*` and `desc/source/*` provenance fields
 //! - `desc/reference/*` for EEG (`scheme=unknown`)
+//! - `desc/cap/labelscheme` for EEG (`10-20`)
 //!
 //! Stream type mapping:
 //! - `EmotivEEG` -> `EEG`
 //! - `EmotivMotion` -> `MoCap`
 //! - `EmotivBandPower` -> `EEG`
-//! - `EmotivMetrics` -> `""` (empty/non-standard content type)
+//! - `EmotivMetrics` -> `Metrics`
 //! - `EmotivMentalCommands` -> `Markers`
 //! - `EmotivFacialExpressions` -> `Markers`
-//! - `EmotivDeviceQuality` -> `EEG`
-//! - `EmotivEEGQuality` -> `EEG`
+//! - `EmotivDeviceQuality` -> `Quality`
+//! - `EmotivEEGQuality` -> `Quality`
 //!
 //! Sample payload values and channel ordering remain unchanged.
 
@@ -119,10 +121,12 @@ struct ChannelMeta {
     label: String,
     /// Human-readable measurement unit (e.g. `microvolts`, `%`, `none`).
     unit: &'static str,
-    /// Channel semantic type (`eeg`, `misc`, `stim`).
+    /// Channel semantic type following XDF naming conventions where available.
     kind: &'static str,
-    /// Optional sensor location for spatial channels (10-20 label).
-    location: Option<String>,
+    /// Optional EEG 10-20 label for spatial channels.
+    location_label: Option<String>,
+    /// Optional EEG channel coordinates in millimeters.
+    location_xyz_mm: Option<[f64; 3]>,
 }
 
 /// Static outlet schema used to build both `StreamInfo` and status summaries.
@@ -144,7 +148,30 @@ fn simple_channel(label: &str, unit: &'static str, kind: &'static str) -> Channe
         label: label.to_string(),
         unit,
         kind,
-        location: None,
+        location_label: None,
+        location_xyz_mm: None,
+    }
+}
+
+/// Return canonical 10-20 electrode coordinates in millimeters.
+fn eeg_position_10_20_xyz_mm(label: &str) -> Option<[f64; 3]> {
+    match label {
+        "AF3" => Some([-35.0, 76.0, 52.0]),
+        "AF4" => Some([35.0, 76.0, 52.0]),
+        "F7" => Some([-68.0, 46.0, 40.0]),
+        "F3" => Some([-48.0, 52.0, 54.0]),
+        "FC5" => Some([-60.0, 22.0, 52.0]),
+        "T7" => Some([-84.0, 0.0, 10.0]),
+        "P7" => Some([-68.0, -48.0, 36.0]),
+        "O1" => Some([-30.0, -84.0, 28.0]),
+        "O2" => Some([30.0, -84.0, 28.0]),
+        "P8" => Some([68.0, -48.0, 36.0]),
+        "T8" => Some([84.0, 0.0, 10.0]),
+        "FC6" => Some([60.0, 22.0, 52.0]),
+        "F4" => Some([48.0, 52.0, 54.0]),
+        "F8" => Some([68.0, 46.0, 40.0]),
+        "Pz" => Some([0.0, -58.0, 64.0]),
+        _ => None,
     }
 }
 
@@ -152,7 +179,7 @@ fn simple_channel(label: &str, unit: &'static str, kind: &'static str) -> Channe
 ///
 /// The returned metadata is the single source of truth for:
 /// - `StreamInfo` core fields (name/type/count/rate)
-/// - XML channel metadata (`label`, `unit`, `type`, optional `location`)
+/// - XML channel metadata (`label`, `unit`, `type`, optional `location_label` and `location`)
 /// - startup status summaries
 fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
     match stream {
@@ -164,8 +191,12 @@ fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
                 .map(|ch| ChannelMeta {
                     label: ch.name,
                     unit: "microvolts",
-                    kind: "eeg",
-                    location: ch.position_10_20,
+                    kind: "EEG",
+                    location_xyz_mm: ch
+                        .position_10_20
+                        .as_deref()
+                        .and_then(eeg_position_10_20_xyz_mm),
+                    location_label: ch.position_10_20,
                 })
                 .collect();
             OutletMeta {
@@ -180,16 +211,16 @@ fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
             stream_type: "MoCap",
             srate: 0.0,
             channels: vec![
-                simple_channel("acc_x", "g", "misc"),
-                simple_channel("acc_y", "g", "misc"),
-                simple_channel("acc_z", "g", "misc"),
-                simple_channel("mag_x", "uT", "misc"),
-                simple_channel("mag_y", "uT", "misc"),
-                simple_channel("mag_z", "uT", "misc"),
-                simple_channel("q0", "none", "misc"),
-                simple_channel("q1", "none", "misc"),
-                simple_channel("q2", "none", "misc"),
-                simple_channel("q3", "none", "misc"),
+                simple_channel("acc_x", "g", "Misc"),
+                simple_channel("acc_y", "g", "Misc"),
+                simple_channel("acc_z", "g", "Misc"),
+                simple_channel("mag_x", "uT", "Misc"),
+                simple_channel("mag_y", "uT", "Misc"),
+                simple_channel("mag_z", "uT", "Misc"),
+                simple_channel("q0", "none", "OrientationA"),
+                simple_channel("q1", "none", "OrientationB"),
+                simple_channel("q2", "none", "OrientationC"),
+                simple_channel("q3", "none", "OrientationD"),
             ],
         },
         LslStream::BandPower => {
@@ -199,7 +230,7 @@ fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
                     channels.push(simple_channel(
                         &format!("{}_{}", sensor, band),
                         "uV2/Hz",
-                        "misc",
+                        "Misc",
                     ));
                 }
             }
@@ -212,33 +243,33 @@ fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
         }
         LslStream::Metrics => OutletMeta {
             name: "EmotivMetrics",
-            stream_type: "",
+            stream_type: "Metrics",
             srate: 0.0,
             channels: vec![
-                simple_channel("engagement", "none", "misc"),
-                simple_channel("excitement", "none", "misc"),
-                simple_channel("long_excitement", "none", "misc"),
-                simple_channel("stress", "none", "misc"),
-                simple_channel("relaxation", "none", "misc"),
-                simple_channel("interest", "none", "misc"),
-                simple_channel("attention", "none", "misc"),
-                simple_channel("focus", "none", "misc"),
+                simple_channel("engagement", "none", "Misc"),
+                simple_channel("excitement", "none", "Misc"),
+                simple_channel("long_excitement", "none", "Misc"),
+                simple_channel("stress", "none", "Misc"),
+                simple_channel("relaxation", "none", "Misc"),
+                simple_channel("interest", "none", "Misc"),
+                simple_channel("attention", "none", "Misc"),
+                simple_channel("focus", "none", "Misc"),
             ],
         },
         LslStream::MentalCommands => OutletMeta {
             name: "EmotivMentalCommands",
             stream_type: "Markers",
             srate: 0.0,
-            channels: vec![simple_channel("command_power", "none", "stim")],
+            channels: vec![simple_channel("command_power", "none", "Stim")],
         },
         LslStream::FacialExpressions => OutletMeta {
             name: "EmotivFacialExpressions",
             stream_type: "Markers",
             srate: 0.0,
             channels: vec![
-                simple_channel("upper_face_power", "none", "stim"),
-                simple_channel("lower_face_power", "none", "stim"),
-                simple_channel("reserved", "none", "stim"),
+                simple_channel("upper_face_power", "none", "Stim"),
+                simple_channel("lower_face_power", "none", "Stim"),
+                simple_channel("reserved", "none", "Stim"),
             ],
         },
         LslStream::DeviceQuality => {
@@ -247,15 +278,15 @@ fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
                 channels.push(simple_channel(
                     &format!("{}_contact_quality", sensor),
                     "none",
-                    "misc",
+                    "Misc",
                 ));
             }
-            channels.push(simple_channel("battery_percent", "%", "misc"));
-            channels.push(simple_channel("signal_strength", "none", "misc"));
-            channels.push(simple_channel("overall_quality", "none", "misc"));
+            channels.push(simple_channel("battery_percent", "%", "Misc"));
+            channels.push(simple_channel("signal_strength", "none", "Misc"));
+            channels.push(simple_channel("overall_quality", "none", "Misc"));
             OutletMeta {
                 name: "EmotivDeviceQuality",
-                stream_type: "EEG",
+                stream_type: "Quality",
                 srate: 0.0,
                 channels,
             }
@@ -266,15 +297,15 @@ fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
                 channels.push(simple_channel(
                     &format!("{}_signal_quality", sensor),
                     "none",
-                    "misc",
+                    "Misc",
                 ));
             }
-            channels.push(simple_channel("battery_percent", "%", "misc"));
-            channels.push(simple_channel("overall_quality", "none", "misc"));
-            channels.push(simple_channel("sample_rate_quality", "none", "misc"));
+            channels.push(simple_channel("battery_percent", "%", "Misc"));
+            channels.push(simple_channel("overall_quality", "none", "Misc"));
+            channels.push(simple_channel("sample_rate_quality", "none", "Misc"));
             OutletMeta {
                 name: "EmotivEEGQuality",
-                stream_type: "EEG",
+                stream_type: "Quality",
                 srate: 0.0,
                 channels,
             }
@@ -309,8 +340,15 @@ fn build_stream_info(
         channel = channel.append_child_value("label", &ch.label);
         channel = channel.append_child_value("unit", ch.unit);
         channel = channel.append_child_value("type", ch.kind);
-        if let Some(location) = &ch.location {
-            channel = channel.append_child_value("location", location);
+        if let Some(location_label) = &ch.location_label {
+            channel = channel.append_child_value("location_label", location_label);
+        }
+        if let Some([x, y, z]) = ch.location_xyz_mm {
+            let mut location = channel.append_child("location");
+            location = location.append_child_value("X", &x.to_string());
+            location = location.append_child_value("Y", &y.to_string());
+            location = location.append_child_value("Z", &z.to_string());
+            let _ = location;
         }
         let _ = channel;
     }
@@ -327,6 +365,10 @@ fn build_stream_info(
     let _ = source;
 
     if meta.name == "EmotivEEG" {
+        let mut cap = desc.append_child("cap");
+        cap = cap.append_child_value("labelscheme", "10-20");
+        let _ = cap;
+
         let mut reference = desc.append_child("reference");
         reference = reference.append_child_value("scheme", "unknown");
         reference = reference.append_child_value("notes", "not provided by Cortex eeg payload");
@@ -900,9 +942,15 @@ mod tests {
         assert_eq!(info.nominal_srate(), model.sampling_rate_hz());
         assert_eq!(info.channel_count() as usize, meta.channels.len());
         assert!(xml.contains("<label>AF3</label>"));
-        assert!(xml.contains("<location>AF3</location>"));
+        assert!(xml.contains("<location_label>AF3</location_label>"));
+        assert_eq!(count_occurrences(&xml, "<location>"), meta.channels.len());
+        assert!(
+            meta.channels
+                .first()
+                .is_some_and(|channel| channel.location_xyz_mm.is_some())
+        );
         assert!(xml.contains("<unit>microvolts</unit>"));
-        assert!(xml.contains("<type>eeg</type>"));
+        assert!(xml.contains("<type>EEG</type>"));
     }
 
     #[test]
@@ -912,6 +960,7 @@ mod tests {
         let info = build_stream_info(&meta, "INSIGHT-TEST", &model).unwrap();
         let xml = info.to_xml().unwrap();
 
+        assert!(xml.contains("<labelscheme>10-20</labelscheme>"));
         assert!(xml.contains("<scheme>unknown</scheme>"));
         assert!(xml.contains("<notes>not provided by Cortex eeg payload</notes>"));
     }
@@ -954,13 +1003,48 @@ mod tests {
     }
 
     #[test]
-    fn metrics_stream_type_is_empty() {
+    fn metrics_stream_type_is_metrics() {
         let model = HeadsetModel::Insight;
         let meta = outlet_meta(LslStream::Metrics, &model);
         let info = build_stream_info(&meta, "MET-TEST", &model).unwrap();
 
-        assert_eq!(meta.stream_type, "");
-        assert_eq!(info.stream_type(), "");
+        assert_eq!(meta.stream_type, "Metrics");
+        assert_eq!(info.stream_type(), "Metrics");
+    }
+
+    #[test]
+    fn quality_streams_use_quality_type() {
+        let model = HeadsetModel::Insight;
+        for stream in [LslStream::DeviceQuality, LslStream::EegQuality] {
+            let meta = outlet_meta(stream, &model);
+            let info = build_stream_info(&meta, "QUALITY-TEST", &model).unwrap();
+
+            assert_eq!(meta.stream_type, "Quality");
+            assert_eq!(info.stream_type(), "Quality");
+        }
+    }
+
+    #[test]
+    fn motion_stream_uses_mocap_orientation_channel_types() {
+        let model = HeadsetModel::Insight;
+        let meta = outlet_meta(LslStream::Motion, &model);
+
+        let kinds: Vec<&str> = meta.channels.iter().map(|ch| ch.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                "Misc",
+                "Misc",
+                "Misc",
+                "Misc",
+                "Misc",
+                "Misc",
+                "OrientationA",
+                "OrientationB",
+                "OrientationC",
+                "OrientationD"
+            ]
+        );
     }
 
     #[test]
@@ -971,9 +1055,9 @@ mod tests {
             let info = build_stream_info(&meta, "MARKER-TEST", &model).unwrap();
             let xml = info.to_xml().unwrap();
 
-            assert!(meta.channels.iter().all(|c| c.kind == "stim"));
+            assert!(meta.channels.iter().all(|c| c.kind == "Stim"));
             assert_eq!(
-                count_occurrences(&xml, "<type>stim</type>"),
+                count_occurrences(&xml, "<type>Stim</type>"),
                 meta.channels.len()
             );
         }

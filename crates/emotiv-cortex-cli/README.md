@@ -7,8 +7,16 @@ records/markers, profiles, and BCI training workflows.
 
 ## Install
 
+Install from crates.io:
+
 ```bash
 cargo install emotiv-cortex-cli
+```
+
+Install from this repository checkout:
+
+```bash
+./scripts/install-emotiv-cortex-cli.sh
 ```
 
 ## Optional LSL Support
@@ -22,6 +30,13 @@ cargo install emotiv-cortex-cli --features lsl
 LSL support is currently available on Windows and macOS.
 Linux is currently unsupported for `--features lsl`.
 
+After installation, ensure your cargo bin directory is in `PATH`:
+
+```bash
+# bash/zsh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
 ## LSL Metadata Schema
 
 When streaming to LSL, the CLI publishes self-documenting stream metadata so
@@ -32,10 +47,12 @@ Each outlet includes channel metadata at:
 - `desc/channels/channel/label`
 - `desc/channels/channel/unit`
 - `desc/channels/channel/type`
+- `desc/channels/channel/location_label` (EEG 10-20 label)
+- `desc/channels/channel/location/{X,Y,Z}` (EEG coordinates in millimeters)
 
-EEG outlets also include per-channel `location` (10-20 label) and explicit
-reference metadata:
+EEG outlets also include explicit cap/reference metadata:
 
+- `desc/cap/labelscheme = 10-20`
 - `desc/reference/scheme = unknown`
 - `desc/reference/notes = not provided by Cortex eeg payload`
 
@@ -44,14 +61,22 @@ Stream-level `type` values are:
 - `EmotivEEG` -> `EEG`
 - `EmotivMotion` -> `MoCap`
 - `EmotivBandPower` -> `EEG`
-- `EmotivMetrics` -> `""` (empty)
+- `EmotivMetrics` -> `Metrics`
 - `EmotivMentalCommands` -> `Markers`
 - `EmotivFacialExpressions` -> `Markers`
-- `EmotivDeviceQuality` -> `EEG`
-- `EmotivEEGQuality` -> `EEG`
+- `EmotivDeviceQuality` -> `Quality`
+- `EmotivEEGQuality` -> `Quality`
 
-Compatibility note: if your resolver/filter logic matched previous type values
-like `Motion`, `FFT`, `Metrics`, or `Quality`, update those queries.
+Channel `type` naming follows XDF conventions where defined:
+
+- EEG channels use `EEG`
+- Motion quaternion channels use `OrientationA/B/C/D`
+- Derived/custom channels fall back to `Misc`
+- Marker-like channels use `Stim`
+
+Compatibility note: if your resolver/filter logic expected the previous
+`EmotivMetrics` empty stream type or `Emotiv*Quality` streams as `EEG`, update
+those queries.
 
 ## Usage
 
