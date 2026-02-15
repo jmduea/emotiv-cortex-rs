@@ -49,6 +49,48 @@ jobs:
           --no-default-features
           -- -W clippy::pedantic
 
+  coverage:
+    name: Coverage Gate (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Coverage threshold (workspace line >= 50%)
+        env:
+          EMOTIV_SKIP_LIVE_TESTS: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --workspace --all-targets \
+            --lcov --output-path lcov.info \
+            --fail-under-lines 50 | tee coverage.txt
+
+      - name: Coverage gate summary
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          {
+            echo "## Coverage Gate"
+            echo ""
+            echo "- Threshold: line coverage >= 50%"
+            echo "- Result: PASS"
+            echo "- Total coverage:"
+            grep '^TOTAL' coverage.txt || echo "(TOTAL row not found in output)"
+            echo ""
+            echo "LCOV report is uploaded as artifact: \`lcov\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: |
+            lcov.info
+            coverage.txt
+
   rustls-matrix:
     name: Rustls Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -121,11 +163,39 @@ jobs:
             exit 1
           fi
 
-      - name: Build emotiv-cortex-v2 docs with warnings denied
+      - name: Verify no ignored rustdoc examples in emotiv-cortex-cli src
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R -n '```ignore' crates/emotiv-cortex-cli/src; then
+            echo "Found rustdoc examples marked as ignore in crates/emotiv-cortex-cli/src."
+            exit 1
+          fi
+
+      - name: Build emotiv-cortex-v2 rustdoc with warnings denied
         run: >
-          RUSTDOCFLAGS="-D warnings"
-          cargo doc -p emotiv-cortex-v2 --no-deps
+          cargo rustdoc -p emotiv-cortex-v2
           --no-default-features --features rustls-tls,config-toml
+          -- -D warnings
+
+      - name: Build emotiv-cortex-cli rustdoc with warnings denied
+        run: >
+          cargo rustdoc -p emotiv-cortex-cli
+          --no-default-features
+          -- -D warnings
+
+      - name: Documentation gates summary
+        if: ${{ success() }}
+        shell: bash
+        run: |
+          {
+            echo "## Documentation Gates"
+            echo ""
+            echo "- \`emotiv-cortex-v2\` doctests: PASS"
+            echo "- \`emotiv-cortex-v2\` rustdoc warnings denied: PASS"
+            echo "- \`emotiv-cortex-cli\` rustdoc warnings denied: PASS"
+            echo "- rustdoc \`ignore\` snippet scan (both crates): PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   lsl-windows:
     name: Check CLI LSL (Windows)

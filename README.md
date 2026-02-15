@@ -2,6 +2,9 @@
 
 Rust workspace for Emotiv Cortex v2 tooling and integrations.
 
+[![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+[Coverage Reports](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+
 ## Crates
 
 - `emotiv-cortex-v2` - typed Rust client for the Emotiv Cortex v2 WebSocket API
@@ -35,6 +38,32 @@ cargo check -p emotiv-cortex-v2 --no-default-features --features rustls-tls,conf
 cargo check -p emotiv-cortex-v2 --no-default-features --features native-tls,config-toml
 cargo check -p emotiv-cortex-cli --no-default-features
 cargo test -p emotiv-cortex-v2 --no-default-features --features rustls-tls,config-toml --tests
+```
+
+### Pre-commit and pre-push gates
+
+This repo provides a `pre-commit` configuration with local gates:
+
+- **pre-commit**: `rustfmt` + strict `clippy` for `emotiv-cortex-v2` and `emotiv-cortex-cli`
+- **pre-push**:
+  - test baseline (`rustls`)
+  - doctests for `emotiv-cortex-v2`
+  - rustdoc builds for both crates with warnings denied
+  - workspace coverage gate (line coverage >= 50%)
+
+Install and enable hooks:
+
+```bash
+pipx install pre-commit
+cargo install cargo-llvm-cov
+pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+Run all configured checks manually:
+
+```bash
+pre-commit run --all-files
+pre-commit run --all-files --hook-stage pre-push
 ```
 
 Pedantic linting remains non-blocking for now:

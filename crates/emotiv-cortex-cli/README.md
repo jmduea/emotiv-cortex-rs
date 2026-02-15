@@ -2,6 +2,9 @@
 
 Interactive CLI explorer for the Emotiv Cortex v2 API.
 
+[![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+[Coverage Reports](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+
 The CLI supports authentication, headset/session management, stream inspection,
 records/markers, profiles, and BCI training workflows.
 

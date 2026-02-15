@@ -190,7 +190,8 @@ impl ResilientClient {
 
     /// Create data stream channels for the specified streams.
     ///
-    /// This delegates to the underlying [`CortexClient::create_stream_channels`].
+    /// This delegates to the underlying
+    /// [`crate::client::CortexClient::create_stream_channels`].
     pub async fn create_stream_channels(&self, streams: &[&str]) -> crate::client::StreamReceivers {
         self.client().await.create_stream_channels(streams)
     }

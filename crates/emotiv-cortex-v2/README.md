@@ -2,6 +2,9 @@
 
 A Rust client for the [Emotiv Cortex v2 WebSocket API](https://emotiv.gitbook.io/cortex-api/).
 
+[![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+[Coverage Reports](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+
 Provides a complete, typed interface to the Emotiv Cortex service for interacting with Emotiv EEG headsets (Insight, EPOC+, EPOC X, EPOC Flex).
 
 ## Features

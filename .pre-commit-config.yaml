@@ -1,0 +1,83 @@
+minimum_pre_commit_version: "3.7.0"
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+
+repos:
+  - repo: local
+    hooks:
+      - id: rustfmt-check
+        name: rustfmt check
+        entry: cargo fmt --all --check
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: clippy-v2-strict
+        name: clippy strict (emotiv-cortex-v2)
+        entry: >
+          cargo clippy -p emotiv-cortex-v2 --lib
+          --no-default-features --features rustls-tls,config-toml
+          -- -D clippy::unwrap_used -D clippy::expect_used
+          -D clippy::panic -D clippy::todo -D clippy::unimplemented
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: clippy-cli-strict
+        name: clippy strict (emotiv-cortex-cli)
+        entry: >
+          cargo clippy -p emotiv-cortex-cli --bin emotiv-cortex-cli
+          --no-default-features
+          -- -D clippy::unwrap_used -D clippy::expect_used
+          -D clippy::panic -D clippy::todo -D clippy::unimplemented
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: tests-rustls
+        name: tests (rustls matrix baseline)
+        entry: >
+          cargo test -p emotiv-cortex-v2
+          --no-default-features --features rustls-tls,config-toml
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: doctest-v2
+        name: doctest (emotiv-cortex-v2)
+        entry: >
+          cargo test -p emotiv-cortex-v2 --doc
+          --no-default-features --features rustls-tls,config-toml
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: rustdoc-v2-deny-warnings
+        name: rustdoc warnings denied (emotiv-cortex-v2)
+        entry: >
+          cargo rustdoc -p emotiv-cortex-v2
+          --no-default-features --features rustls-tls,config-toml
+          -- -D warnings
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: rustdoc-cli-deny-warnings
+        name: rustdoc warnings denied (emotiv-cortex-cli)
+        entry: >
+          cargo rustdoc -p emotiv-cortex-cli
+          --no-default-features
+          -- -D warnings
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: coverage-gate
+        name: coverage gate (workspace, line >= 50%)
+        entry: >
+          cargo llvm-cov --workspace --all-targets
+          --summary-only --fail-under-lines 50
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

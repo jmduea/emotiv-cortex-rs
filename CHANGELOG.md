@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial workspace split from `neurohid` into dedicated repository.
 - Tag-driven crates.io publish pipeline for `emotiv-cortex-v2` and `emotiv-cortex-cli`.
+- Repo-level `.pre-commit-config.yaml` with local pre-commit/pre-push quality gates.
 
 ### Changed
 
@@ -31,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI LSL transport now removes `unsafe impl Send` and uses dedicated outlet worker ownership threads.
 - Workspace/toolchain baseline updated to edition `2024` and rust-version `1.85`.
 - CI now uses explicit feature matrix (`rustls`, `native-tls`, CLI no-default-features, CLI LSL on Linux), rustfmt check, and curated blocking clippy gate with pedantic reporting non-blocking.
+- CI now enforces workspace line coverage threshold (>= 50%) using `cargo-llvm-cov`.
+- CI docs gates now include `emotiv-cortex-v2` doctests and rustdoc warnings-as-errors checks for both crates, plus rustdoc `ignore` snippet scanning for both `src` trees.
+- CI now publishes coverage/docs gate results to GitHub job summaries and uploads `coverage.txt` alongside `lcov.info` artifacts.
 - Bumped crate versions to `0.3.0` for `emotiv-cortex-v2` and `emotiv-cortex-cli`.
 - CLI LSL metadata now aligns stream/channel naming to XDF conventions where defined:
   - `EmotivMetrics` stream `type` changed from empty to `Metrics`.
