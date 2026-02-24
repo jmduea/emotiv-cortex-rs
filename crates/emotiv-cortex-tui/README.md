@@ -1,15 +1,12 @@
 # emotiv-cortex-tui
 
+<img width="1840" height="613" alt="tui_device_panel" src="https://github.com/user-attachments/assets/188bdb44-b059-4477-8c48-7f648c06b4d6" />
+
 Terminal UI dashboard for the Emotiv Cortex v2 API.
 
 [![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
 
-**Pre-release.** This crate is under active development; behavior and features may change. Treat as pre-release when using it.
-
-**Not affiliated with Emotiv.** This crate is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. For official support and products, see [emotiv.com](https://www.emotiv.com/).
-
-A full-screen ratatui TUI that auto-connects to the first available EMOTIV
-headset and displays real-time data:
+A full-screen ratatui TUI for visualizing device info/streams/etc:
 
 - **Dashboard** — session info, performance metric gauges, mental command /
   facial expression readouts
@@ -22,9 +19,18 @@ headset and displays real-time data:
 
 ## Install
 
-**Windows:** Download the binary from [GitHub Releases](https://github.com/jmduea/emotiv-cortex-rs/releases): `emotiv-cortex-tui-x86_64-pc-windows-msvc.exe`. Put it on your `PATH` or run it from a terminal.
+**Windows:** Download the binary from [GitHub Releases](https://github.com/jmduea/emotiv-cortex-rs/releases):
+
+- Baseline (no LSL)
+  - `emotiv-cortex-tui-x86_64-pc-windows-msvc.exe` 
+
+- [Lab Streaming Layer](https://github.com/sccn/labstreaminglayer) support for streaming to other apps
+  - `emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe`
+ 
 
 **From source** (any platform):
+
+Clone this repo then:
 
 ```bash
 # bash / macOS / WSL
@@ -32,31 +38,39 @@ headset and displays real-time data:
 
 # PowerShell (Windows)
 .\scripts\install-emotiv-cortex-tui.ps1
-```
 
-Or build and run with Cargo (from this repo): `cargo run -p emotiv-cortex-tui --release --no-default-features`.
-
-## Optional LSL Support
-
-LSL is disabled by default. Install with LSL support from this repo:
-
-```bash
-cargo install --path crates/emotiv-cortex-tui --features lsl
-
-# or use the scripts
+# LSL versions
+# LSL support is currently available on Windows and macOS.
+# Linux is currently unsupported for `--features lsl`.
 ./scripts/install-emotiv-cortex-tui.sh --lsl   # bash / macOS
 .\scripts\install-emotiv-cortex-tui.ps1 -Lsl   # PowerShell (Windows)
 ```
-
-LSL support is currently available on Windows and macOS.
-Linux is currently unsupported for `--features lsl`.
-
-After installation, ensure your cargo bin directory is in `PATH`:
+Or run with Cargo:
 
 ```bash
-# bash/zsh
-export PATH="$HOME/.cargo/bin:$PATH"
+# No LSL
+cargo run -p emotiv-cortex-tui --release --no-default-features
+# LSL
+cargo run -p emotiv-cortex-tui --release --features lsl
 ```
+
+## Configuration
+
+The TUI needs Emotiv Cortex API credentials. It discovers config in this order (first found wins):
+
+1. **Environment variables**  
+   `EMOTIV_CLIENT_ID` and `EMOTIV_CLIENT_SECRET` (required). Optional: `EMOTIV_CORTEX_URL`, `EMOTIV_LICENSE`.
+
+2. **Config file**  
+   `cortex.toml` in the current directory, or `~/.config/emotiv-cortex/cortex.toml`:
+
+   ```toml
+   client_id = "your-client-id"
+   client_secret = "your-client-secret"
+   # optional: cortex_url = "wss://localhost:6868"
+   ```
+
+Get credentials from the [Emotiv Developer Portal](https://www.emotiv.com/developer/). The [EMOTIV Launcher](https://www.emotiv.com/emotiv-launcher/) must be running for the TUI to connect.
 
 ## LSL Metadata Schema
 
@@ -95,27 +109,10 @@ Channel `type` naming follows XDF conventions where defined:
 - Derived/custom channels fall back to `Misc`
 - Marker-like channels use `Stim`
 
-## Usage
+**Pre-release.** This crate is under active development; behavior and features may change. Treat as pre-release when using it.
 
-```bash
-emotiv-cortex-tui --help
-emotiv-cortex-tui --verbose
-```
+**Not affiliated with Emotiv.** This crate is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. For official support and products, see [emotiv.com](https://www.emotiv.com/)
 
-## Configuration
+License
 
-The TUI needs Emotiv Cortex API credentials. It discovers config in this order (first found wins):
-
-1. **Environment variables**  
-   `EMOTIV_CLIENT_ID` and `EMOTIV_CLIENT_SECRET` (required). Optional: `EMOTIV_CORTEX_URL`, `EMOTIV_LICENSE`.
-
-2. **Config file**  
-   `cortex.toml` in the current directory, or `~/.config/emotiv-cortex/cortex.toml`:
-
-   ```toml
-   client_id = "your-client-id"
-   client_secret = "your-client-secret"
-   # optional: cortex_url = "wss://localhost:6868"
-   ```
-
-Get credentials from the [Emotiv Developer Portal](https://www.emotiv.com/developer/). The [EMOTIV Launcher](https://www.emotiv.com/emotiv-launcher/) must be running for the TUI to connect.
+Licensed under either of Apache License, Version 2.0 or MIT License at your option.
