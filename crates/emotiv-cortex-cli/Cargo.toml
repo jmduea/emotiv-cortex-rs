@@ -4,7 +4,7 @@ version = "0.3.0"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
-description = "Interactive CLI explorer for the Emotiv Cortex v2 API"
+description = "Terminal UI dashboard for the Emotiv Cortex v2 API"
 repository = "https://github.com/jmduea/emotiv-cortex-rs"
 homepage = "https://github.com/jmduea/emotiv-cortex-rs"
 documentation = "https://docs.rs/emotiv-cortex-cli"
@@ -25,10 +25,19 @@ lsl = ["dep:lsl"]
 
 [dependencies]
 
-emotiv-cortex-v2 = { version = "=0.3.0", path = "../emotiv-cortex-v2", default-features = false, features = ["rustls-tls", "config-toml"] }
+emotiv-cortex-v2 = { version = "=0.3.0", path = "../emotiv-cortex-v2", default-features = false, features = [
+    "rustls-tls",
+    "config-toml",
+] }
 
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "time",
+    "sync",
+] }
 futures-core = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
@@ -37,8 +46,10 @@ serde_json = "1"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
-dialoguer = "0.11"
-colored = "2"
+
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
 
 # Logging
 tracing = "0.1"

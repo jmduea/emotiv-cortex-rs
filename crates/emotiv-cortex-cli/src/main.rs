@@ -1,39 +1,40 @@
 //! # emotiv-cortex-cli
 //!
-//! Interactive CLI explorer for the Emotiv Cortex v2 API.
-//! Covers authentication, headset management, data streaming,
-//! recording, markers, profiles, and BCI training.
-//! When built with `--features lsl`, the CLI can publish self-documenting LSL
-//! streams with channel metadata for downstream tool interoperability.
+//! Terminal UI dashboard for the Emotiv Cortex v2 API.
+//!
+//! Displays real-time device status, EEG/motion/band-power stream
+//! visualisations, performance metrics, and optional LSL forwarding
+//! in a full-screen ratatui interface.
 
 #[cfg(all(feature = "lsl", target_os = "linux"))]
 compile_error!(
-    "The `lsl` feature is currently unsupported on Linux due upstream `lsl-sys` \
+    "The `lsl` feature is currently unsupported on Linux due to upstream `lsl-sys` \
 build incompatibilities. Build without `--features lsl`, or use Windows/macOS for LSL."
 );
 
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
-use colored::Colorize;
-use dialoguer::Select;
+use crossterm::event::EventStream;
+use futures_util::StreamExt;
+use tokio::sync::mpsc;
 
 mod app;
-mod commands;
+mod bridge;
+mod event;
 #[cfg(all(feature = "lsl", not(target_os = "linux")))]
 mod lsl;
+mod tui;
+mod ui;
 
-use app::{SessionState, format_status, graceful_shutdown};
-use commands::{
-    cmd_authentication, cmd_cortex_info, cmd_headsets, cmd_profiles, cmd_records, cmd_sessions,
-    cmd_stream_data, cmd_subjects, cmd_training,
-};
-#[cfg(all(feature = "lsl", not(target_os = "linux")))]
-use commands::{cmd_stream_lsl, quickstart_lsl};
+use app::App;
+use event::{AppEvent, LogEntry};
 
 use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
-/// Interactive CLI explorer for the Emotiv Cortex v2 API.
+/// Terminal UI dashboard for the Emotiv Cortex v2 API.
 #[derive(Parser)]
 #[command(name = "emotiv-cortex-cli", version, about)]
 struct Cli {
@@ -48,19 +49,20 @@ struct Cli {
     /// Enable verbose logging (set `RUST_LOG` for fine-grained control)
     #[arg(short, long)]
     verbose: bool,
-
-    /// Quickstart: authenticate, connect to first INSIGHT headset, create
-    /// session, and start LSL streaming with default streams (EEG) — then
-    /// drop into the interactive menu.
-    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
-    #[arg(long, alias = "quick")]
-    quickstart: bool,
 }
+
+/// Target frame interval (~30 fps).
+const TICK_RATE: Duration = Duration::from_millis(33);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    // ── Tracing ──────────────────────────────────────────────────────
+    // When the TUI is active we only want tracing going to a file or
+    // the log panel, not stdout.  For now we just silence console
+    // output unless --verbose is given (which is mainly useful when
+    // the TUI is not yet fully initialised).
     if cli.verbose {
         tracing_subscriber::fmt()
             .with_env_filter("emotiv_cortex_v2=debug,emotiv_cortex_cli=debug")
@@ -71,123 +73,123 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .init();
     }
 
-    // Load config
-    let mut config = if let Ok(c) = CortexConfig::discover(cli.config.as_deref().map(Path::new)) {
-        c
-    } else {
-        println!("{} No config file found. Using defaults.", "Note:".yellow());
-        println!(
-            "  Set {} and {} env vars, or create a cortex.toml file.\n",
-            "EMOTIV_CLIENT_ID".cyan(),
-            "EMOTIV_CLIENT_SECRET".cyan()
-        );
-        CortexConfig::new("", "")
-    };
+    // ── Config ───────────────────────────────────────────────────────
+    let mut config =
+        CortexConfig::discover(cli.config.as_deref().map(Path::new)).unwrap_or_else(|_| {
+            eprintln!(
+                "Note: No config file found. Set EMOTIV_CLIENT_ID / \
+                 EMOTIV_CLIENT_SECRET env vars, or create a cortex.toml file."
+            );
+            CortexConfig::new("", "")
+        });
 
     if let Some(url) = &cli.url {
         config.cortex_url = url.clone();
     }
 
-    println!(
-        "{} Emotiv Cortex CLI Explorer",
-        "╔══════════════════════════════════╗\n║".bright_blue()
+    // ── Connect ──────────────────────────────────────────────────────
+    let client = CortexClient::connect(&config).await.map_err(|e| {
+        format!("Connection to {} failed: {e}\nMake sure the EMOTIV Launcher is running.", config.cortex_url)
+    })?;
+
+    // ── App state ────────────────────────────────────────────────────
+    let client = Arc::new(client);
+
+    // ── Event channel ────────────────────────────────────────────────
+    let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+
+    // ── Shutdown broadcast ───────────────────────────────────────────
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+    let mut app = App::new(Arc::clone(&client), config, tx.clone(), shutdown_tx.clone());
+
+    // ── Enter TUI ────────────────────────────────────────────────────
+    let mut tui = tui::Tui::enter()?;
+
+    // ── Spawn authenticate + discover background task ────────────────
+    spawn_authenticate(
+        Arc::clone(&client),
+        app.config.clone(),
+        tx.clone(),
     );
-    println!("{}", "╚══════════════════════════════════╝".bright_blue());
-    println!("Connecting to {}...\n", config.cortex_url.cyan());
 
-    let client = match CortexClient::connect(&config).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("{} {}", "Connection failed:".red(), e);
-            eprintln!("Make sure the EMOTIV Launcher is running.");
-            return Ok(());
+    // ── Main event loop ──────────────────────────────────────────────
+    let mut terminal_events = EventStream::new();
+    let mut tick = tokio::time::interval(TICK_RATE);
+
+    loop {
+        // Draw
+        tui.terminal.draw(|frame| ui::draw(frame, &app))?;
+
+        // Wait for next event
+        tokio::select! {
+            // Terminal input (keyboard/mouse/resize)
+            maybe_event = terminal_events.next() => {
+                if let Some(Ok(evt)) = maybe_event {
+                    if app.handle_event(AppEvent::Terminal(evt)) {
+                        break;
+                    }
+                }
+            }
+            // Tick timer
+            _ = tick.tick() => {
+                if app.handle_event(AppEvent::Tick) {
+                    break;
+                }
+            }
+            // Data / lifecycle events from background tasks
+            Some(event) = rx.recv() => {
+                if app.handle_event(event) {
+                    break;
+                }
+            }
         }
-    };
 
-    println!("{}", "Connected!".green());
-
-    let mut state = SessionState {
-        client,
-        config,
-        token: None,
-        session_id: None,
-        headset_id: None,
-        #[cfg(all(feature = "lsl", not(target_os = "linux")))]
-        lsl_streaming: None,
-    };
-
-    // ── Quickstart mode ─────────────────────────────────────────────
-    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
-    if cli.quickstart {
-        if let Err(e) = quickstart_lsl(&mut state).await {
-            eprintln!("{} {}", "Quickstart failed:".red(), e);
-            eprintln!("Falling back to interactive mode.");
+        if app.should_quit {
+            break;
         }
     }
 
-    run_menu_loop(&mut state).await?;
+    // ── Shutdown ─────────────────────────────────────────────────────
+    let _ = shutdown_tx.send(());
+
+    // Gracefully stop LSL streaming if active
+    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+    if let Some(lsl_handle) = app.lsl_streaming.take() {
+        if let (Some(token), Some(session_id)) = (&app.token, &app.session_id) {
+            let _ =
+                lsl::stop_lsl_streaming(lsl_handle, &app.client, token, session_id)
+                    .await;
+        }
+    }
+
+    // Tui::drop restores the terminal automatically.
+    drop(tui);
 
     Ok(())
 }
 
-fn menu_items(_state: &SessionState) -> Vec<String> {
-    let mut items = vec![
-        "Cortex Info".to_string(),
-        "Authentication".to_string(),
-        "Headsets".to_string(),
-        "Sessions".to_string(),
-        "Stream Data".to_string(),
-        "Records & Markers".to_string(),
-        "Subjects".to_string(),
-        "Profiles".to_string(),
-        "BCI Training".to_string(),
-    ];
-
-    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
-    {
-        let lsl_label = if _state.lsl_streaming.is_some() {
-            "Stream to LSL (active \u{25b6})".to_string()
-        } else {
-            "Stream to LSL".to_string()
-        };
-        items.push(lsl_label);
-    }
-
-    items.push("Quit".to_string());
-    items
-}
-
-async fn run_menu_loop(state: &mut SessionState) -> dialoguer::Result<()> {
-    loop {
-        println!();
-        println!("{}", format_status(state));
-
-        let items = menu_items(state);
-        let selection = Select::new()
-            .with_prompt("Select an action")
-            .items(&items)
-            .default(0)
-            .interact_opt()?;
-
-        let quit_index = items.len() - 1;
-        if selection.is_none() || matches!(selection, Some(i) if i == quit_index) {
-            graceful_shutdown(state).await;
-            return Ok(());
+/// Spawns the background authenticate + discover task.
+///
+/// Does NOT connect to any headset — the user selects one from the
+/// Device tab and presses Enter.
+fn spawn_authenticate(
+    client: Arc<CortexClient>,
+    config: CortexConfig,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    tokio::spawn(async move {
+        match bridge::authenticate_and_discover(&client, &config, &tx).await {
+            Ok(result) => {
+                let _ = tx.send(AppEvent::AuthReady {
+                    token: result.token,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(AppEvent::Log(LogEntry::error(format!(
+                    "Authentication failed: {e}"
+                ))));
+            }
         }
-
-        match selection {
-            Some(0) => cmd_cortex_info(state).await,
-            Some(1) => cmd_authentication(state).await,
-            Some(2) => cmd_headsets(state).await,
-            Some(3) => cmd_sessions(state).await,
-            Some(4) => cmd_stream_data(state).await,
-            Some(5) => cmd_records(state).await,
-            Some(6) => cmd_subjects(state).await,
-            Some(7) => cmd_profiles(state).await,
-            Some(8) => cmd_training(state).await,
-            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
-            Some(9) => cmd_stream_lsl(state).await,
-            _ => {}
-        }
-    }
+    });
 }

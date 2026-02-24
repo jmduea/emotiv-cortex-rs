@@ -24,13 +24,28 @@ Rust workspace for Emotiv Cortex v2 tooling and integrations.
 cargo install emotiv-cortex-cli
 ```
 
-Enable LSL support:
+From this repository checkout:
 
 ```bash
-cargo install emotiv-cortex-cli --features lsl
+# bash / macOS / WSL
+./scripts/install-emotiv-cortex-cli.sh
+
+# PowerShell (Windows)
+.\scripts\install-emotiv-cortex-cli.ps1
 ```
 
-Note: LSL is currently supported on Windows and macOS only.
+Enable LSL support (Windows and macOS only):
+
+```bash
+# cargo directly
+cargo install emotiv-cortex-cli --features lsl
+
+# bash / macOS / WSL
+./scripts/install-emotiv-cortex-cli.sh --lsl
+
+# PowerShell (Windows)
+.\scripts\install-emotiv-cortex-cli.ps1 -Lsl
+```
 
 ## Development
 

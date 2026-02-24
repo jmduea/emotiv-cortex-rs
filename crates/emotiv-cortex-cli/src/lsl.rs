@@ -26,7 +26,6 @@
 //!
 //! Sample payload values and channel ordering remain unchanged.
 
-use colored::Colorize;
 use emotiv_cortex_v2::CortexClient;
 use emotiv_cortex_v2::headset::HeadsetModel;
 use emotiv_cortex_v2::protocol::constants::Streams;
@@ -453,7 +452,7 @@ fn register_outlet(
     source_id: &str,
     model: &HeadsetModel,
 ) -> Result<mpsc::Sender<Vec<f32>>, Box<dyn std::error::Error>> {
-    active_outlets.push(format_outlet_summary(&meta).cyan().to_string());
+    active_outlets.push(format_outlet_summary(&meta));
     let worker = spawn_outlet_worker(meta, source_id.to_string(), model.clone())?;
     let sample_tx = worker.sample_tx.clone();
     outlet_workers.push(worker);
@@ -477,6 +476,15 @@ pub struct LslStreamingHandle {
     subscribed: Vec<LslStream>,
 }
 
+impl std::fmt::Debug for LslStreamingHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LslStreamingHandle")
+            .field("active_streams", &self.active_streams)
+            .field("subscribed", &self.subscribed)
+            .finish_non_exhaustive()
+    }
+}
+
 impl LslStreamingHandle {
     /// Format a compact status string for display in the CLI status bar.
     ///
@@ -493,11 +501,7 @@ impl LslStreamingHandle {
     pub fn format_detailed_stats(&self) -> String {
         let elapsed = self.started_at.elapsed();
         let time_str = format_duration(elapsed);
-        let mut out = format!(
-            "{} Streaming for {}\n",
-            "LSL Status:".green().bold(),
-            time_str.cyan()
-        );
+        let mut out = format!("LSL Status: Streaming for {time_str}\n");
         for (i, (name, count)) in self.sample_counts.iter().enumerate() {
             let n = count.load(Ordering::Relaxed);
             let outlet_name = self
@@ -506,10 +510,7 @@ impl LslStreamingHandle {
                 .map(|s| s.as_str())
                 .unwrap_or("?");
             out.push_str(&format!(
-                "  {} {:>12} samples  (outlet: {})\n",
-                format!("{}:", name).cyan(),
-                n,
-                outlet_name,
+                "  {name}: {n:>12} samples  (outlet: {outlet_name})\n",
             ));
         }
         out
@@ -834,11 +835,7 @@ pub async fn start_lsl_streaming(
         }
     }
 
-    println!(
-        "{} {}",
-        "LSL streaming active:".green().bold(),
-        active_outlets.join(", "),
-    );
+    tracing::info!("LSL streaming active: {}", active_outlets.join(", "));
 
     Ok(LslStreamingHandle {
         shutdown_tx,
@@ -861,7 +858,7 @@ pub async fn stop_lsl_streaming(
     token: &str,
     session_id: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("{}", "Shutting down LSL streaming...".yellow());
+    tracing::info!("Shutting down LSL streaming...");
     let LslStreamingHandle {
         shutdown_tx,
         tasks,
@@ -884,20 +881,14 @@ pub async fn stop_lsl_streaming(
     .await;
 
     if shutdown_timeout.is_err() {
-        eprintln!(
-            "{}",
-            "Warning: Some tasks did not shut down cleanly".yellow()
-        );
+        tracing::warn!("Some tasks did not shut down cleanly");
     }
 
     // Drop worker senders and join outlet threads.
     for worker in outlet_workers {
         drop(worker.sample_tx);
         if worker.thread_handle.join().is_err() {
-            eprintln!(
-                "{}",
-                "Warning: An LSL outlet thread panicked during shutdown".yellow()
-            );
+            tracing::warn!("An LSL outlet thread panicked during shutdown");
         }
     }
 
@@ -917,10 +908,10 @@ pub async fn stop_lsl_streaming(
         .collect();
 
     if let Err(e) = streams::unsubscribe(client, token, session_id, &stream_names).await {
-        eprintln!("{} {}", "Warning: Failed to unsubscribe:".yellow(), e);
+        tracing::warn!("Failed to unsubscribe: {e}");
     }
 
-    println!("{}", "LSL streaming stopped.".green());
+    tracing::info!("LSL streaming stopped.");
     Ok(())
 }
 

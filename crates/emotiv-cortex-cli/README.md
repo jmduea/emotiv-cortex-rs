@@ -1,12 +1,21 @@
 # emotiv-cortex-cli
 
-Interactive CLI explorer for the Emotiv Cortex v2 API.
+Terminal UI dashboard for the Emotiv Cortex v2 API.
 
 [![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
 [Coverage Reports](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
 
-The CLI supports authentication, headset/session management, stream inspection,
-records/markers, profiles, and BCI training workflows.
+A full-screen ratatui TUI that auto-connects to the first available EMOTIV
+headset and displays real-time data:
+
+- **Dashboard** — session info, performance metric gauges, mental command /
+  facial expression readouts
+- **Streams** — live EEG sparklines, motion/IMU line charts, band-power
+  breakdowns (cycle views with `v`)
+- **LSL** — optional Lab Streaming Layer forwarding with per-stream sample
+  counts (toggle with `l`, requires `--features lsl`)
+- **Device** — full headset metadata and per-channel contact quality gauges
+- **Log** — scrollable timestamped event log
 
 ## Install
 
@@ -19,7 +28,11 @@ cargo install emotiv-cortex-cli
 Install from this repository checkout:
 
 ```bash
+# bash / macOS / WSL
 ./scripts/install-emotiv-cortex-cli.sh
+
+# PowerShell (Windows)
+.\scripts\install-emotiv-cortex-cli.ps1
 ```
 
 ## Optional LSL Support
@@ -27,7 +40,14 @@ Install from this repository checkout:
 LSL is disabled by default. Install with LSL support:
 
 ```bash
+# cargo directly
 cargo install emotiv-cortex-cli --features lsl
+
+# bash / macOS / WSL
+./scripts/install-emotiv-cortex-cli.sh --lsl
+
+# PowerShell (Windows)
+.\scripts\install-emotiv-cortex-cli.ps1 -Lsl
 ```
 
 LSL support is currently available on Windows and macOS.
@@ -76,10 +96,6 @@ Channel `type` naming follows XDF conventions where defined:
 - Motion quaternion channels use `OrientationA/B/C/D`
 - Derived/custom channels fall back to `Misc`
 - Marker-like channels use `Stim`
-
-Compatibility note: if your resolver/filter logic expected the previous
-`EmotivMetrics` empty stream type or `Emotiv*Quality` streams as `EEG`, update
-those queries.
 
 ## Usage
 

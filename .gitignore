@@ -2,4 +2,5 @@
 Cargo.lock
 
 .rust-skills
+.worktrees
 third_party
