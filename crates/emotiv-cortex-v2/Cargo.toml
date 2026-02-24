@@ -8,7 +8,8 @@ description = "Rust client for the Emotiv Cortex v2 WebSocket API"
 repository = "https://github.com/jmduea/emotiv-cortex-rs"
 homepage = "https://github.com/jmduea/emotiv-cortex-rs"
 documentation = "https://docs.rs/emotiv-cortex-v2"
-keywords = ["emotiv", "cortex", "eeg", "bci", "brain-computer-interface"]
+# crates.io keywords must be < 20 characters (e.g. "bci" not "brain-computer-interface")
+keywords = ["emotiv", "cortex", "eeg", "bci"]
 categories = ["api-bindings", "science"]
 readme = "README.md"
 exclude = ["tests/", ".github/"]
