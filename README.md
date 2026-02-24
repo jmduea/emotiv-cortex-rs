@@ -16,13 +16,11 @@ Rust workspace for Emotiv Cortex v2 tooling and integrations.
 - `emotiv-cortex-tui` - interactive TUI for exploring Cortex APIs and streaming
 self-documenting LSL outlets
 
-## Install
+## Using emotiv-cortex-tui
 
-```bash
-cargo install emotiv-cortex-tui
-```
+The TUI is distributed as a **Windows binary** on [GitHub Releases](https://github.com/jmduea/emotiv-cortex-rs/releases). Download `emotiv-cortex-tui-x86_64-pc-windows-msvc.exe` for the latest release, optionally rename it to `emotiv-cortex-tui.exe`, and run it (e.g. from a terminal).
 
-From this repository checkout:
+To build from source instead:
 
 ```bash
 # bash / macOS / WSL
@@ -32,18 +30,29 @@ From this repository checkout:
 .\scripts\install-emotiv-cortex-tui.ps1
 ```
 
-Enable LSL support (Windows and macOS only):
+LSL support (Windows and macOS only):
 
 ```bash
-# cargo directly
-cargo install emotiv-cortex-tui --features lsl
-
-# bash / macOS
-./scripts/install-emotiv-cortex-tui.sh --lsl
-
-# PowerShell (Windows)
-.\scripts\install-emotiv-cortex-tui.ps1 -Lsl
+./scripts/install-emotiv-cortex-tui.sh --lsl   # bash / macOS
+.\scripts\install-emotiv-cortex-tui.ps1 -Lsl   # PowerShell (Windows)
 ```
+
+### Configuration
+
+The TUI needs Emotiv Cortex API credentials. Set them in one of these ways (first found wins):
+
+1. **Environment variables**  
+   `EMOTIV_CLIENT_ID` and `EMOTIV_CLIENT_SECRET` (required). Optional: `EMOTIV_CORTEX_URL`, `EMOTIV_LICENSE`.
+
+2. **Config file**  
+   Create a `cortex.toml` in the current directory or at `~/.config/emotiv-cortex/cortex.toml`:
+
+   ```toml
+   client_id = "your-client-id"
+   client_secret = "your-client-secret"
+   ```
+
+   Get credentials from the [Emotiv Developer Portal](https://www.emotiv.com/developer/). The [EMOTIV Launcher](https://www.emotiv.com/emotiv-launcher/) must be running for the TUI to connect.
 
 ## Development
 

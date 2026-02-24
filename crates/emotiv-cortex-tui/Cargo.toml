@@ -1,6 +1,6 @@
 [package]
 name = "emotiv-cortex-tui"
-version = "0.3.2"
+version = "0.3.3"
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
@@ -26,7 +26,7 @@ lsl = ["dep:lsl", "dep:libc"]
 
 [dependencies]
 
-emotiv-cortex-v2 = { version = "=0.3.2", path = "../emotiv-cortex-v2", default-features = false, features = [
+emotiv-cortex-v2 = { version = "=0.3.3", path = "../emotiv-cortex-v2", default-features = false, features = [
     "rustls-tls",
     "config-toml",
 ] }

@@ -22,13 +22,9 @@ headset and displays real-time data:
 
 ## Install
 
-Install from crates.io:
+**Windows:** Download the binary from [GitHub Releases](https://github.com/jmduea/emotiv-cortex-rs/releases): `emotiv-cortex-tui-x86_64-pc-windows-msvc.exe`. Put it on your `PATH` or run it from a terminal.
 
-```bash
-cargo install emotiv-cortex-tui
-```
-
-Install from this repository checkout:
+**From source** (any platform):
 
 ```bash
 # bash / macOS / WSL
@@ -38,19 +34,18 @@ Install from this repository checkout:
 .\scripts\install-emotiv-cortex-tui.ps1
 ```
 
+Or build and run with Cargo (from this repo): `cargo run -p emotiv-cortex-tui --release --no-default-features`.
+
 ## Optional LSL Support
 
-LSL is disabled by default. Install with LSL support:
+LSL is disabled by default. Install with LSL support from this repo:
 
 ```bash
-# cargo directly
-cargo install emotiv-cortex-tui --features lsl
+cargo install --path crates/emotiv-cortex-tui --features lsl
 
-# bash / macOS 
-./scripts/install-emotiv-cortex-tui.sh --lsl
-
-# PowerShell (Windows)
-.\scripts\install-emotiv-cortex-tui.ps1 -Lsl
+# or use the scripts
+./scripts/install-emotiv-cortex-tui.sh --lsl   # bash / macOS
+.\scripts\install-emotiv-cortex-tui.ps1 -Lsl   # PowerShell (Windows)
 ```
 
 LSL support is currently available on Windows and macOS.
@@ -107,7 +102,20 @@ emotiv-cortex-tui --help
 emotiv-cortex-tui --verbose
 ```
 
-You can provide credentials through:
+## Configuration
 
-- Environment: `EMOTIV_CLIENT_ID`, `EMOTIV_CLIENT_SECRET`
-- Config file: `cortex.toml`
+The TUI needs Emotiv Cortex API credentials. It discovers config in this order (first found wins):
+
+1. **Environment variables**  
+   `EMOTIV_CLIENT_ID` and `EMOTIV_CLIENT_SECRET` (required). Optional: `EMOTIV_CORTEX_URL`, `EMOTIV_LICENSE`.
+
+2. **Config file**  
+   `cortex.toml` in the current directory, or `~/.config/emotiv-cortex/cortex.toml`:
+
+   ```toml
+   client_id = "your-client-id"
+   client_secret = "your-client-secret"
+   # optional: cortex_url = "wss://localhost:6868"
+   ```
+
+Get credentials from the [Emotiv Developer Portal](https://www.emotiv.com/developer/). The [EMOTIV Launcher](https://www.emotiv.com/emotiv-launcher/) must be running for the TUI to connect.
