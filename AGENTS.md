@@ -142,3 +142,8 @@ For detailed guidance, see:
   - `gh` (`pr`, `issue`, `run`), `docker`, `kubectl`
 - In Copilot/VS Code workflows, prefer hook-routed enforcement where available.
 - On Windows + VS Code agent workflows, if command rewrite hooks are not active, use explicit `rtk ...` command prefixes by default.
+
+### Git / pre-commit
+
+- Do **not** use `--no-verify` on `git commit` or `git push`. It bypasses pre-commit/pre-push and defeats the quality gates.
+- If hooks fail (e.g. "pre-commit not found"), direct the user to set `git config core.hooksPath .githooks` so hooks run via `uv run --with pre-commit`.

@@ -80,7 +80,7 @@ uv run pre-commit -- run --all-files
 uv run pre-commit -- run --all-files --hook-stage pre-push
 ```
 
-Use repo githooks so Git runs pre-commit via uv:
+Use the repo githooks so Git runs pre-commit via uv (required for hooks to work without a global `pre-commit`). **Do not use `--no-verify`** on commit/push or you bypass these gates:
 
 ```bash
 git config core.hooksPath .githooks

@@ -280,7 +280,10 @@ mod tests {
             panic!("expected RetriesExhausted, got {err:?}");
         };
         assert_eq!(*attempts, 2); // initial + 1 retry
-        assert!(matches!(last_error.as_ref(), CortexError::Timeout { seconds: 5 }));
+        assert!(matches!(
+            last_error.as_ref(),
+            CortexError::Timeout { seconds: 5 }
+        ));
         assert!(last_error.is_retryable());
     }
 
