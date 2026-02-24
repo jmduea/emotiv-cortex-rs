@@ -18,8 +18,8 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     if app.log_entries.is_empty() {
-        let msg = Paragraph::new("  No log entries yet.")
-            .style(Style::default().fg(Color::DarkGray));
+        let msg =
+            Paragraph::new("  No log entries yet.").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(msg, inner);
         return;
     }
@@ -50,10 +50,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             Line::from(vec![
-                Span::styled(
-                    format!(" {age:>8} "),
-                    Style::default().fg(Color::DarkGray),
-                ),
+                Span::styled(format!(" {age:>8} "), Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     level_str,
                     Style::default()

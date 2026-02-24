@@ -31,8 +31,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // status bar
-            Constraint::Length(3),  // tab bar
+            Constraint::Length(1), // status bar
+            Constraint::Length(3), // tab bar
             Constraint::Min(10),   // content area
             Constraint::Length(1), // key help
         ])
@@ -104,7 +104,6 @@ fn draw_key_help(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
     spans.push(Span::styled("?", Style::default().fg(Color::Yellow)));
     spans.push(Span::raw(" Help"));
 
-    let help = Paragraph::new(Line::from(spans))
-        .style(Style::default().fg(Color::DarkGray));
+    let help = Paragraph::new(Line::from(spans)).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(help, area);
 }

@@ -19,22 +19,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         ConnectionPhase::ConnectingHeadset => {
             let msg = Paragraph::new("  Connecting to headset…")
                 .style(Style::default().fg(Color::Yellow))
-                .block(
-                    Block::default()
-                        .title(" Device ")
-                        .borders(Borders::ALL),
-                );
+                .block(Block::default().title(" Device ").borders(Borders::ALL));
             frame.render_widget(msg, area);
         }
         ConnectionPhase::Ready => draw_connected_detail(frame, app, area),
         _ => {
             let msg = Paragraph::new("  Authenticating… please wait.")
                 .style(Style::default().fg(Color::DarkGray))
-                .block(
-                    Block::default()
-                        .title(" Device ")
-                        .borders(Borders::ALL),
-                );
+                .block(Block::default().title(" Device ").borders(Borders::ALL));
             frame.render_widget(msg, area);
         }
     }
@@ -80,19 +72,10 @@ fn draw_headset_list(frame: &mut Frame, app: &App, area: Rect) {
             };
 
             let line = Line::from(vec![
-                Span::styled(
-                    marker,
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    &h.id,
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(marker, Style::default().fg(Color::Cyan)),
+                Span::styled(&h.id, Style::default().add_modifier(Modifier::BOLD)),
                 Span::raw("  "),
-                Span::styled(
-                    &h.status,
-                    Style::default().fg(status_color),
-                ),
+                Span::styled(&h.status, Style::default().fg(status_color)),
                 Span::raw(battery_label(h.battery_percent)),
             ]);
 
@@ -223,17 +206,14 @@ fn draw_contact_quality(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let channel_names: Vec<String> = app
-        .headset_model
-        .as_ref()
-        .map_or_else(
-            || {
-                (0..dq.channel_quality.len())
-                    .map(|i| format!("Ch{i}"))
-                    .collect()
-            },
-            |m| m.channel_names().iter().map(|s| (*s).to_string()).collect(),
-        );
+    let channel_names: Vec<String> = app.headset_model.as_ref().map_or_else(
+        || {
+            (0..dq.channel_quality.len())
+                .map(|i| format!("Ch{i}"))
+                .collect()
+        },
+        |m| m.channel_names().iter().map(|s| (*s).to_string()).collect(),
+    );
 
     let num = dq.channel_quality.len();
     let constraints: Vec<Constraint> = (0..num)
