@@ -1,58 +1,20 @@
 # emotiv-cortex-rs
 
-Rust workspace for Emotiv Cortex v2 tooling and integrations.
+[![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
 
-## Status and disclaimer
+Rust workspace containing the source code for emotiv-cortex-v2 and emotiv-cortex-tui.
 
-**Pre-release.** These crates are under active development. APIs and behavior may change; treat as pre-release software when integrating or depending on them.
+## For developers
 
-**Not affiliated with Emotiv.** This project is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. Emotiv and Emotiv Cortex are trademarks of Emotiv, Inc. This repository builds on and interoperates with the Emotiv Cortex API; for official support and products, see [emotiv.com](https://www.emotiv.com/).
+- [`emotiv-cortex-v2`](https://github.com/jmduea/emotiv-cortex-rs/tree/main/crates/emotiv-cortex-v2)/[crates.io](https://crates.io/crates/emotiv-cortex-v2) - typed Rust client for the Emotiv Cortex v2 WebSocket API
 
-[CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
-
-## Crates
-
-- `emotiv-cortex-v2` - typed Rust client for the Emotiv Cortex v2 WebSocket API
-- `emotiv-cortex-tui` - interactive TUI for exploring Cortex APIs and streaming
+## For people who just want an easy way to connect their device and see it in action/use lsl
+- [`emotiv-cortex-tui`](https://github.com/jmduea/emotiv-cortex-rs/tree/main/crates/emotiv-cortex-tui) - interactive TUI for exploring Cortex APIs and streaming
 self-documenting LSL outlets
 
-## Using emotiv-cortex-tui
+## Contributors
 
-The TUI is distributed as a **Windows binary** on [GitHub Releases](https://github.com/jmduea/emotiv-cortex-rs/releases). Download `emotiv-cortex-tui-x86_64-pc-windows-msvc.exe` for the latest release, optionally rename it to `emotiv-cortex-tui.exe`, and run it (e.g. from a terminal).
-
-To build from source instead:
-
-```bash
-# bash / macOS / WSL
-./scripts/install-emotiv-cortex-tui.sh
-
-# PowerShell (Windows)
-.\scripts\install-emotiv-cortex-tui.ps1
-```
-
-LSL support (Windows and macOS only):
-
-```bash
-./scripts/install-emotiv-cortex-tui.sh --lsl   # bash / macOS
-.\scripts\install-emotiv-cortex-tui.ps1 -Lsl   # PowerShell (Windows)
-```
-
-### Configuration
-
-The TUI needs Emotiv Cortex API credentials. Set them in one of these ways (first found wins):
-
-1. **Environment variables**  
-   `EMOTIV_CLIENT_ID` and `EMOTIV_CLIENT_SECRET` (required). Optional: `EMOTIV_CORTEX_URL`, `EMOTIV_LICENSE`.
-
-2. **Config file**  
-   Create a `cortex.toml` in the current directory or at `~/.config/emotiv-cortex/cortex.toml`:
-
-   ```toml
-   client_id = "your-client-id"
-   client_secret = "your-client-secret"
-   ```
-
-   Get credentials from the [Emotiv Developer Portal](https://www.emotiv.com/developer/). The [EMOTIV Launcher](https://www.emotiv.com/emotiv-launcher/) must be running for the TUI to connect.
+- Contributions are welcome, below you'll find some of the checks to be done before any pull requests are made.
 
 ## Development
 
@@ -60,12 +22,10 @@ The TUI needs Emotiv Cortex API credentials. Set them in one of these ways (firs
 cargo fmt --all --check
 cargo check --workspace
 cargo clippy -p emotiv-cortex-v2 --lib --no-default-features --features rustls-tls,config-toml -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
-cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui --no-default-features -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
 
 # feature matrix
 cargo check -p emotiv-cortex-v2 --no-default-features --features rustls-tls,config-toml
 cargo check -p emotiv-cortex-v2 --no-default-features --features native-tls,config-toml
-cargo check -p emotiv-cortex-tui --no-default-features
 cargo test -p emotiv-cortex-v2 --no-default-features --features rustls-tls,config-toml --tests
 ```
 
@@ -109,3 +69,12 @@ cargo clippy -p emotiv-cortex-v2 --lib --no-default-features --features rustls-t
 cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui --no-default-features -- -W clippy::pedantic
 ```
 
+## Status and disclaimer
+
+**Pre-release.** These crates are under active development. APIs and behavior may change; treat as pre-release software when integrating or depending on them.
+
+**Not affiliated with Emotiv.** This project is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. Emotiv and Emotiv Cortex are trademarks of Emotiv, Inc. This repository builds on and interoperates with the Emotiv Cortex API; for official support and products, see [emotiv.com](https://www.emotiv.com/).
+
+## License
+
+Licensed under either of Apache License, Version 2.0 or MIT License at your option.
