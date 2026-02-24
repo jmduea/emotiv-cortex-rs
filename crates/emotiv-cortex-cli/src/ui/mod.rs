@@ -87,6 +87,10 @@ fn draw_key_help(frame: &mut Frame, app: &App, area: ratatui::layout::Rect) {
             spans.push(Span::styled("Enter", Style::default().fg(Color::Yellow)));
             spans.push(Span::raw(" Connect  "));
         }
+        if app.phase == crate::app::ConnectionPhase::Ready {
+            spans.push(Span::styled("d", Style::default().fg(Color::Yellow)));
+            spans.push(Span::raw(" Disconnect  "));
+        }
         spans.push(Span::styled("r", Style::default().fg(Color::Yellow)));
         spans.push(Span::raw(" Refresh  "));
     }

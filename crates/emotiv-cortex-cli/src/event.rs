@@ -51,6 +51,10 @@ pub enum AppEvent {
         headset_id: String,
         model: HeadsetModel,
     },
+    /// Headset connection attempt failed — reset phase back to Discovered.
+    ConnectionFailed,
+    /// Headset disconnected — session closed, phase returns to Discovered.
+    Disconnected,
     /// Informational / error log entry.
     Log(LogEntry),
     /// Request application quit.

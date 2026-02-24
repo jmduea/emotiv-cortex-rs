@@ -198,6 +198,21 @@ pub struct App {
     // ── LSL ─────────────────────────────────────────────────────────
     #[cfg(all(feature = "lsl", not(target_os = "linux")))]
     pub lsl_streaming: Option<crate::lsl::LslStreamingHandle>,
+    /// Streams selected for LSL publication (configured before starting).
+    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+    pub lsl_selected_streams: std::collections::HashSet<crate::lsl::LslStream>,
+    /// Cursor row in the stream-selection checklist (0-based).
+    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+    pub lsl_cursor: usize,
+    /// Index of the stream whose XML is shown in the XML viewer.
+    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+    pub lsl_xml_stream_idx: usize,
+    /// Vertical scroll offset for the XML viewer paragraph.
+    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+    pub lsl_xml_scroll: u16,
+    /// Whether the XML metadata panel is visible.
+    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+    pub lsl_show_xml: bool,
 
     // ── Log ─────────────────────────────────────────────────────────
     pub log_entries: VecDeque<LogEntry>,
@@ -251,6 +266,16 @@ impl App {
 
             #[cfg(all(feature = "lsl", not(target_os = "linux")))]
             lsl_streaming: None,
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            lsl_selected_streams: crate::lsl::LslStream::all().iter().copied().collect(),
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            lsl_cursor: 0,
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            lsl_xml_stream_idx: 0,
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            lsl_xml_scroll: 0,
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            lsl_show_xml: false,
 
             log_entries: VecDeque::with_capacity(LOG_CAP),
             log_auto_scroll: true,
@@ -286,7 +311,9 @@ impl App {
     /// Returns `true` if the app should quit.
     pub fn handle_event(&mut self, event: AppEvent) -> bool {
         match event {
-            AppEvent::Terminal(crossterm::event::Event::Key(key)) => {
+            AppEvent::Terminal(crossterm::event::Event::Key(key))
+                if key.kind == crossterm::event::KeyEventKind::Press =>
+            {
                 self.handle_key(key);
             }
             AppEvent::Eeg(ref data) => self.push_eeg(data),
@@ -331,10 +358,52 @@ impl App {
             } => {
                 self.token = Some(token);
                 self.session_id = Some(session_id);
+                // Populate headset_info immediately from the already-fetched
+                // discovery list so the Device tab renders without needing a
+                // manual 'r' refresh.
+                self.headset_info = self
+                    .discovered_headsets
+                    .iter()
+                    .find(|h| h.id == headset_id)
+                    .cloned();
                 self.headset_id = Some(headset_id);
                 self.headset_model = Some(model);
                 self.phase = ConnectionPhase::Ready;
                 self.log(LogEntry::info("Connection ready"));
+            }
+            AppEvent::ConnectionFailed => {
+                self.phase = ConnectionPhase::Discovered;
+                self.log(LogEntry::warn(
+                    "Connection failed — select a headset and try again",
+                ));
+            }
+            AppEvent::Disconnected => {
+                // Signal existing stream tasks to stop
+                let _ = self.shutdown_tx.send(());
+                // Create a fresh shutdown channel for the next connection
+                let (new_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+                self.shutdown_tx = new_tx;
+
+                self.session_id = None;
+                self.headset_id = None;
+                self.headset_info = None;
+                self.headset_model = None;
+                self.phase = ConnectionPhase::Discovered;
+                self.subscribed_streams.clear();
+                self.device_quality = None;
+                self.metrics = None;
+                self.mental_command = None;
+                self.facial_expression = None;
+                self.eeg_buffers.clear();
+                self.motion_accel.clear();
+                self.motion_mag.clear();
+                self.band_power_buffers.clear();
+                self.log(LogEntry::info(
+                    "Disconnected — select a headset to reconnect",
+                ));
+                self.active_tab = Tab::Device;
+                // Refresh headset list so user sees current state
+                self.refresh_headsets();
             }
             #[cfg(all(feature = "lsl", not(target_os = "linux")))]
             AppEvent::LslStarted(handle) => {
@@ -345,6 +414,9 @@ impl App {
             AppEvent::LslStopped => {
                 self.log(LogEntry::info("LSL streaming stopped"));
                 self.lsl_streaming = None;
+                self.lsl_show_xml = false;
+                self.lsl_xml_stream_idx = 0;
+                self.lsl_xml_scroll = 0;
             }
             AppEvent::Log(entry) => self.log(entry),
             AppEvent::Quit => self.should_quit = true,
@@ -395,6 +467,15 @@ impl App {
                 if self.active_tab == Tab::Device && self.phase == ConnectionPhase::Discovered {
                     self.selected_headset_idx = self.selected_headset_idx.saturating_sub(1);
                 } else {
+                    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+                    if self.active_tab == Tab::Lsl {
+                        if self.lsl_streaming.is_some() && self.lsl_show_xml {
+                            self.lsl_xml_scroll = self.lsl_xml_scroll.saturating_sub(1);
+                        } else if self.lsl_streaming.is_none() {
+                            self.lsl_cursor = self.lsl_cursor.saturating_sub(1);
+                        }
+                        return;
+                    }
                     self.scroll_offset = self.scroll_offset.saturating_sub(1);
                 }
             }
@@ -404,6 +485,27 @@ impl App {
                     self.selected_headset_idx =
                         self.selected_headset_idx.saturating_add(1).min(max);
                 } else {
+                    #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+                    if self.active_tab == Tab::Lsl {
+                        if self.lsl_show_xml {
+                            if let Some(ref handle) = self.lsl_streaming {
+                                let idx = self
+                                    .lsl_xml_stream_idx
+                                    .min(handle.stream_xml_metadata.len().saturating_sub(1));
+                                let line_count = handle
+                                    .stream_xml_metadata
+                                    .get(idx)
+                                    .map_or(0, |(_, x)| x.lines().count());
+                                self.lsl_xml_scroll = self.lsl_xml_scroll.saturating_add(1).min(
+                                    u16::try_from(line_count.saturating_sub(1)).unwrap_or(u16::MAX),
+                                );
+                            }
+                        } else if self.lsl_streaming.is_none() {
+                            let max = crate::lsl::LslStream::all().len().saturating_sub(1);
+                            self.lsl_cursor = self.lsl_cursor.saturating_add(1).min(max);
+                        }
+                        return;
+                    }
                     self.scroll_offset = self.scroll_offset.saturating_add(1);
                 }
             }
@@ -411,6 +513,11 @@ impl App {
             // Device tab: connect to selected headset
             KeyCode::Enter if self.active_tab == Tab::Device => {
                 self.connect_selected_headset();
+            }
+
+            // Device tab: disconnect from headset
+            KeyCode::Char('d') if self.active_tab == Tab::Device => {
+                self.disconnect_headset();
             }
 
             // Device tab: refresh headset list
@@ -427,6 +534,71 @@ impl App {
             #[cfg(all(feature = "lsl", not(target_os = "linux")))]
             KeyCode::Char('l') if self.active_tab == Tab::Lsl => {
                 self.toggle_lsl();
+            }
+
+            // LSL: Enter starts streaming when inactive (mirrors 'l')
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            KeyCode::Enter if self.active_tab == Tab::Lsl && self.lsl_streaming.is_none() => {
+                self.toggle_lsl();
+            }
+
+            // LSL stream selection: Space toggles the highlighted stream
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            KeyCode::Char(' ') if self.active_tab == Tab::Lsl && self.lsl_streaming.is_none() => {
+                if let Some(&stream) = crate::lsl::LslStream::all().get(self.lsl_cursor) {
+                    if self.lsl_selected_streams.contains(&stream) {
+                        self.lsl_selected_streams.remove(&stream);
+                    } else {
+                        self.lsl_selected_streams.insert(stream);
+                    }
+                }
+            }
+
+            // LSL stream selection: 'a' selects all, 'n' clears selection
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            KeyCode::Char('a') if self.active_tab == Tab::Lsl && self.lsl_streaming.is_none() => {
+                self.lsl_selected_streams = crate::lsl::LslStream::all().iter().copied().collect();
+            }
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            KeyCode::Char('n') if self.active_tab == Tab::Lsl && self.lsl_streaming.is_none() => {
+                self.lsl_selected_streams.clear();
+            }
+
+            // LSL XML viewer: 'x' toggles, Left/Right cycles between streams
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            KeyCode::Char('x') if self.active_tab == Tab::Lsl && self.lsl_streaming.is_some() => {
+                self.lsl_show_xml = !self.lsl_show_xml;
+                self.lsl_xml_scroll = 0;
+            }
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            KeyCode::Left
+                if self.active_tab == Tab::Lsl
+                    && self.lsl_show_xml
+                    && self.lsl_streaming.is_some() =>
+            {
+                let len = self
+                    .lsl_streaming
+                    .as_ref()
+                    .map_or(0, |h| h.stream_xml_metadata.len());
+                if len > 0 {
+                    self.lsl_xml_stream_idx = (self.lsl_xml_stream_idx + len - 1) % len;
+                    self.lsl_xml_scroll = 0;
+                }
+            }
+            #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+            KeyCode::Right
+                if self.active_tab == Tab::Lsl
+                    && self.lsl_show_xml
+                    && self.lsl_streaming.is_some() =>
+            {
+                let len = self
+                    .lsl_streaming
+                    .as_ref()
+                    .map_or(0, |h| h.stream_xml_metadata.len());
+                if len > 0 {
+                    self.lsl_xml_stream_idx = (self.lsl_xml_stream_idx + 1) % len;
+                    self.lsl_xml_scroll = 0;
+                }
             }
 
             _ => {}
@@ -502,7 +674,6 @@ impl App {
         };
 
         self.phase = ConnectionPhase::ConnectingHeadset;
-        self.log(LogEntry::info(format!("Connecting to {}…", headset.id)));
 
         let client = Arc::clone(&self.client);
         let token = self.token.clone().unwrap_or_default();
@@ -540,6 +711,68 @@ impl App {
                     let _ = tx.send(AppEvent::Log(LogEntry::error(format!(
                         "Connection failed: {e}"
                     ))));
+                    let _ = tx.send(AppEvent::ConnectionFailed);
+                }
+            }
+        });
+    }
+
+    /// Disconnect from the current headset, closing the session.
+    ///
+    /// Spawns a background task that closes the session and optionally
+    /// disconnects the headset at the Bluetooth level.
+    fn disconnect_headset(&mut self) {
+        if self.phase != ConnectionPhase::Ready {
+            self.log(LogEntry::warn("Not connected — nothing to disconnect"));
+            return;
+        }
+
+        let Some(token) = self.token.clone() else {
+            self.log(LogEntry::warn("No token available"));
+            return;
+        };
+        let Some(session_id) = self.session_id.clone() else {
+            self.log(LogEntry::warn("No active session"));
+            return;
+        };
+        let headset_id = self.headset_id.clone();
+
+        // Stop LSL before disconnecting
+        #[cfg(all(feature = "lsl", not(target_os = "linux")))]
+        if let Some(handle) = self.lsl_streaming.take() {
+            let client = Arc::clone(&self.client);
+            let t = token.clone();
+            let s = session_id.clone();
+            tokio::spawn(async move {
+                let _ = crate::lsl::stop_lsl_streaming(handle, &client, &t, &s).await;
+            });
+        }
+
+        self.phase = ConnectionPhase::ConnectingHeadset; // reuse as "busy" indicator
+        self.log(LogEntry::info("Disconnecting…"));
+
+        let client = Arc::clone(&self.client);
+        let tx = self.tx.clone();
+
+        tokio::spawn(async move {
+            match crate::bridge::disconnect_and_close_session(
+                &client,
+                &token,
+                &session_id,
+                headset_id.as_deref(),
+                &tx,
+            )
+            .await
+            {
+                Ok(()) => {
+                    let _ = tx.send(AppEvent::Disconnected);
+                }
+                Err(e) => {
+                    let _ = tx.send(AppEvent::Log(LogEntry::error(format!(
+                        "Disconnect failed: {e}"
+                    ))));
+                    // Still transition back so the user isn't stuck
+                    let _ = tx.send(AppEvent::Disconnected);
                 }
             }
         });
@@ -588,7 +821,23 @@ impl App {
                 }
             });
         } else if self.phase == ConnectionPhase::Ready {
-            // Start
+            // Start — use the user-configured selection in LslStream::all() order
+            let selected: Vec<crate::lsl::LslStream> = crate::lsl::LslStream::all()
+                .iter()
+                .filter(|s| self.lsl_selected_streams.contains(s))
+                .copied()
+                .collect();
+            if selected.is_empty() {
+                self.log(LogEntry::warn(
+                    "No streams selected — pick at least one with Space",
+                ));
+                return;
+            }
+            // Reset XML viewer for the new session
+            self.lsl_xml_stream_idx = 0;
+            self.lsl_xml_scroll = 0;
+            self.lsl_show_xml = false;
+
             let client = Arc::clone(&self.client);
             let token = self.token.clone().unwrap_or_default();
             let session_id = self.session_id.clone().unwrap_or_default();
@@ -600,7 +849,6 @@ impl App {
                 .headset_id
                 .clone()
                 .unwrap_or_else(|| "emotiv-unknown".to_string());
-            let selected = crate::lsl::LslStream::all().to_vec();
             let tx = self.tx.clone();
             self.log(LogEntry::info("Starting LSL streaming…"));
             tokio::spawn(async move {

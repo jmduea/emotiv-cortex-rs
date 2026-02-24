@@ -40,6 +40,88 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+// ─── Stderr suppression ─────────────────────────────────────────────────
+//
+// liblsl's C code prints multicast-bind warnings directly to stderr,
+// bypassing Rust's tracing/logging.  In a TUI this corrupts the
+// alternate screen.  We redirect stderr to NUL around liblsl calls
+// that are known to emit these warnings.
+
+/// Temporarily redirects stderr to `NUL` (Windows) or `/dev/null` (Unix).
+///
+/// Returns a guard that restores stderr on drop.  If any OS call fails
+/// we silently do nothing — better to show the warnings than crash.
+struct StderrSuppressor {
+    #[cfg(windows)]
+    saved_fd: Option<i32>,
+    #[cfg(not(windows))]
+    saved_fd: Option<i32>,
+}
+
+impl StderrSuppressor {
+    #[allow(unsafe_code)]
+    fn new() -> Self {
+        #[cfg(windows)]
+        {
+            // SAFETY: These are standard CRT calls with no invariants
+            // beyond valid file descriptors.
+            unsafe {
+                use std::ffi::CString;
+                let saved = libc::dup(2);
+                if saved == -1 {
+                    return Self { saved_fd: None };
+                }
+                let nul = CString::new("NUL").expect("static");
+                let nul_fd = libc::open(nul.as_ptr(), libc::O_WRONLY);
+                if nul_fd == -1 {
+                    libc::close(saved);
+                    return Self { saved_fd: None };
+                }
+                libc::dup2(nul_fd, 2);
+                libc::close(nul_fd);
+                Self {
+                    saved_fd: Some(saved),
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            // SAFETY: Same — standard POSIX fd manipulation.
+            unsafe {
+                use std::ffi::CString;
+                let saved = libc::dup(2);
+                if saved == -1 {
+                    return Self { saved_fd: None };
+                }
+                let nul = CString::new("/dev/null").expect("static");
+                let nul_fd = libc::open(nul.as_ptr(), libc::O_WRONLY);
+                if nul_fd == -1 {
+                    libc::close(saved);
+                    return Self { saved_fd: None };
+                }
+                libc::dup2(nul_fd, 2);
+                libc::close(nul_fd);
+                Self {
+                    saved_fd: Some(saved),
+                }
+            }
+        }
+    }
+}
+
+impl Drop for StderrSuppressor {
+    #[allow(unsafe_code)]
+    fn drop(&mut self) {
+        if let Some(saved) = self.saved_fd.take() {
+            // SAFETY: Restoring fd 2 from a previously dup'd descriptor.
+            unsafe {
+                libc::dup2(saved, 2);
+                libc::close(saved);
+            }
+        }
+    }
+}
+
 /// Prepare liblsl for use.
 ///
 /// Currently a no-op — we rely on liblsl's built-in defaults (ResolveScope =
@@ -59,7 +141,7 @@ struct OutletWorker {
 }
 
 /// Which streams to forward to LSL
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LslStream {
     /// Raw EEG voltage samples (channel count/rate based on headset model).
     Eeg,
@@ -292,16 +374,14 @@ fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
         }
         LslStream::EegQuality => {
             let mut channels = Vec::with_capacity(model.num_channels() + 3);
+            // Follow the Cortex API `eq` cols order: batteryPercent, overall,
+            // sampleRateQuality, then one entry per sensor (bare name, no suffix).
+            channels.push(simple_channel("batteryPercent", "%", "Misc"));
+            channels.push(simple_channel("overall", "none", "Misc"));
+            channels.push(simple_channel("sampleRateQuality", "none", "Misc"));
             for sensor in model.channel_names() {
-                channels.push(simple_channel(
-                    &format!("{}_signal_quality", sensor),
-                    "none",
-                    "Misc",
-                ));
+                channels.push(simple_channel(sensor, "none", "Misc"));
             }
-            channels.push(simple_channel("battery_percent", "%", "Misc"));
-            channels.push(simple_channel("overall_quality", "none", "Misc"));
-            channels.push(simple_channel("sample_rate_quality", "none", "Misc"));
             OutletMeta {
                 name: "EmotivEEGQuality",
                 stream_type: "Quality",
@@ -377,6 +457,24 @@ fn build_stream_info(
     Ok(info)
 }
 
+/// Build the XML metadata string for an outlet schema without creating a real outlet.
+///
+/// Used to populate the TUI XML viewer after streaming starts. Returns an empty
+/// string if the stream info cannot be constructed.
+fn build_xml_string(meta: &OutletMeta, source_id: &str, model: &HeadsetModel) -> String {
+    match build_stream_info(meta, source_id, model) {
+        Ok(info) => info
+            .to_xml()
+            .unwrap_or_default()
+            // liblsl (pugixml) indents with \t; ratatui measures tabs as
+            // zero-width so the terminal's 8-column tab stops cause text to
+            // shift during differential re-renders.  Normalize here once.
+            .replace('\t', "  ")
+            .replace('\r', ""),
+        Err(_) => String::new(),
+    }
+}
+
 fn spawn_outlet_worker(
     meta: OutletMeta,
     source_id: String,
@@ -389,6 +487,10 @@ fn spawn_outlet_worker(
     let thread_handle = std::thread::Builder::new()
         .name(thread_name)
         .spawn(move || {
+            // Suppress stderr while liblsl initialises — it prints
+            // multicast-bind warnings that corrupt the TUI.
+            let _stderr_guard = StderrSuppressor::new();
+
             let info = match build_stream_info(&meta, &source_id, &model) {
                 Ok(info) => info,
                 Err(err) => {
@@ -398,7 +500,13 @@ fn spawn_outlet_worker(
             };
 
             let outlet = match lsl::StreamOutlet::new(&info, 0, 360) {
-                Ok(outlet) => outlet,
+                Ok(outlet) => {
+                    // Drop the suppressor to restore stderr before sending
+                    // the ready signal — any subsequent push_sample warnings
+                    // are rare and tolerable.
+                    drop(_stderr_guard);
+                    outlet
+                }
                 Err(err) => {
                     let _ = ready_tx.send(Err(format!("{err:?}")));
                     return;
@@ -474,6 +582,11 @@ pub struct LslStreamingHandle {
     pub active_streams: Vec<String>,
     /// Which Cortex stream types are subscribed, for unsubscribe on stop.
     subscribed: Vec<LslStream>,
+    /// XML metadata strings for each active outlet: `(stream_label, xml_string)`.
+    ///
+    /// Populated at streaming start from [`build_xml_string`] and displayed by
+    /// the TUI XML viewer panel.
+    pub stream_xml_metadata: Vec<(String, String)>,
 }
 
 impl std::fmt::Debug for LslStreamingHandle {
@@ -569,6 +682,16 @@ pub async fn start_lsl_streaming(
             .map(|s| (s.label().to_string(), Arc::new(AtomicU64::new(0))))
             .collect(),
     );
+
+    // XML metadata strings for each selected stream (for TUI display)
+    let stream_xml_metadata: Vec<(String, String)> = selected
+        .iter()
+        .map(|s| {
+            let meta = outlet_meta(*s, model);
+            let xml = build_xml_string(&meta, source_id, model);
+            (s.label().to_string(), xml)
+        })
+        .collect();
 
     for (idx, stream_type) in selected.iter().enumerate() {
         let mut shutdown_rx = shutdown_tx.subscribe();
@@ -817,10 +940,12 @@ pub async fn start_lsl_streaming(
                             item = stream.next() => {
                                 let Some(data) = item else { break };
                                 let mut sample = Vec::with_capacity(data.sensor_quality.len() + 3);
-                                sample.extend_from_slice(&data.sensor_quality);
+                                // Push in API cols order: batteryPercent, overall,
+                                // sampleRateQuality, then per-sensor values.
                                 sample.push(data.battery_percent as f32);
                                 sample.push(data.overall);
                                 sample.push(data.sample_rate_quality);
+                                sample.extend_from_slice(&data.sensor_quality);
                                 if sample_tx.send(sample).await.is_err() {
                                     tracing::warn!("EEG Quality outlet worker stopped");
                                     break;
@@ -845,6 +970,7 @@ pub async fn start_lsl_streaming(
         started_at: Instant::now(),
         active_streams: active_outlets,
         subscribed: selected.to_vec(),
+        stream_xml_metadata,
     })
 }
 
@@ -867,6 +993,7 @@ pub async fn stop_lsl_streaming(
         started_at: _,
         active_streams: _,
         subscribed,
+        stream_xml_metadata: _,
     } = handle;
 
     // Signal all tasks to stop

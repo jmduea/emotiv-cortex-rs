@@ -21,7 +21,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-lsl = ["dep:lsl"]
+lsl = ["dep:lsl", "dep:libc"]
 
 [dependencies]
 
@@ -58,3 +58,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 # Lab Streaming Layer (optional; currently unsupported on Linux)
 lsl = { version = "0.1", optional = true }
+# Used to redirect stderr around liblsl's noisy C-level multicast warnings
+libc = { version = "0.2", optional = true }

@@ -163,6 +163,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // Gracefully close the active session so the next run doesn't
+    // hit a "headset busy" / stale-session error.
+    if let (Some(token), Some(session_id)) = (&app.token, &app.session_id) {
+        if let Err(e) = app.client.close_session(token, session_id).await {
+            tracing::warn!("Failed to close session on exit: {e}");
+        }
+        if let Some(hid) = &app.headset_id {
+            let _ = app.client.disconnect_headset(hid).await;
+        }
+    }
+
     // Tui::drop restores the terminal automatically.
     drop(tui);
 

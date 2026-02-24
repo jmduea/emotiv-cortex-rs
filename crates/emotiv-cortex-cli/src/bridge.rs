@@ -60,6 +60,13 @@ pub async fn authenticate_and_discover(
 
     tx.send(AppEvent::HeadsetUpdate(headsets))?;
 
+    // 3. Clean up stale sessions from previous runs
+    if let Err(e) = close_stale_sessions(client, &token, tx).await {
+        tx.send(AppEvent::Log(LogEntry::warn(format!(
+            "Stale session cleanup failed: {e}"
+        ))))?;
+    }
+
     Ok(AuthResult { token })
 }
 
@@ -96,27 +103,135 @@ pub async fn connect_headset_and_create_session(
         ))))?;
         client.connect_headset(&headset_id).await?;
 
-        // Give the connection time to stabilize
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Give the Bluetooth connection time to stabilize before
+        // session creation — the headset firmware needs a moment.
+        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
 
         tx.send(AppEvent::Log(LogEntry::info("Headset connected")))?;
     }
 
-    // 2. Create session
-    tx.send(AppEvent::Log(LogEntry::info("Creating session…")))?;
+    // 2. Close any existing sessions for this headset to avoid "busy" errors
+    let sessions = client.query_sessions(token).await.unwrap_or_default();
+    for s in &sessions {
+        let owns_headset = s.headset.as_ref().is_some_and(|h| h.id == headset_id);
+        if owns_headset && s.status != "closed" {
+            tx.send(AppEvent::Log(LogEntry::info(format!(
+                "Closing existing session {} for {headset_id}\u{2026}",
+                &s.id[..16.min(s.id.len())]
+            ))))?;
+            let _ = client.close_session(token, &s.id).await;
+            // Brief pause for the API to release the headset
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
 
-    let session = client.create_session(token, &headset_id).await?;
+    // 3. Create session (with retry — headset may need a moment after cleanup)
+    tx.send(AppEvent::Log(LogEntry::info("Creating session\u{2026}")))?;
+
+    let mut last_err = None;
+    for attempt in 0..3 {
+        match client.create_session(token, &headset_id).await {
+            Ok(session) => {
+                tx.send(AppEvent::Log(LogEntry::info(format!(
+                    "Session created: {}",
+                    &session.id[..16.min(session.id.len())]
+                ))))?;
+
+                return Ok(ConnectResult {
+                    session_id: session.id,
+                    headset_id,
+                    model,
+                });
+            }
+            Err(e) => {
+                last_err = Some(e);
+                if attempt < 2 {
+                    tx.send(AppEvent::Log(LogEntry::info(format!(
+                        "Headset not ready yet, retrying ({}/3)\u{2026}",
+                        attempt + 2
+                    ))))?;
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
+            }
+        }
+    }
+
+    Err(last_err.unwrap().into())
+}
+
+// ─── Phase 3: Disconnect (user-initiated) ───────────────────────────────
+
+/// Close the active session and optionally disconnect the headset.
+///
+/// Called when the user presses `d` on the Device tab while connected.
+pub async fn disconnect_and_close_session(
+    client: &emotiv_cortex_v2::CortexClient,
+    token: &str,
+    session_id: &str,
+    headset_id: Option<&str>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 1. Close the session
+    tx.send(AppEvent::Log(LogEntry::info("Closing session…")))?;
+    client.close_session(token, session_id).await?;
+    tx.send(AppEvent::Log(LogEntry::info("Session closed")))?;
+
+    // 2. Disconnect headset at Bluetooth level (best-effort)
+    if let Some(hid) = headset_id {
+        tx.send(AppEvent::Log(LogEntry::info(format!(
+            "Disconnecting {hid}…"
+        ))))?;
+        if let Err(e) = client.disconnect_headset(hid).await {
+            tx.send(AppEvent::Log(LogEntry::warn(format!(
+                "Headset disconnect warning: {e}"
+            ))))?;
+        } else {
+            tx.send(AppEvent::Log(LogEntry::info("Headset disconnected")))?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Close all active sessions for a given token (stale session cleanup).
+///
+/// Called during startup to prevent "headset busy" errors from orphaned
+/// sessions left by previous runs.
+pub async fn close_stale_sessions(
+    client: &emotiv_cortex_v2::CortexClient,
+    token: &str,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let sessions = client.query_sessions(token).await?;
+    let active: Vec<_> = sessions
+        .iter()
+        .filter(|s| s.status == "activated" || s.status == "active" || s.status == "opened")
+        .collect();
+
+    if active.is_empty() {
+        return Ok(());
+    }
 
     tx.send(AppEvent::Log(LogEntry::info(format!(
-        "Session created: {}",
-        &session.id[..16.min(session.id.len())]
+        "Cleaning up {} stale session(s)…",
+        active.len()
     ))))?;
 
-    Ok(ConnectResult {
-        session_id: session.id,
-        headset_id,
-        model,
-    })
+    for session in &active {
+        if let Err(e) = client.close_session(token, &session.id).await {
+            tx.send(AppEvent::Log(LogEntry::warn(format!(
+                "Failed to close stale session {}: {e}",
+                &session.id[..16.min(session.id.len())]
+            ))))?;
+        } else {
+            tx.send(AppEvent::Log(LogEntry::info(format!(
+                "Closed stale session {}",
+                &session.id[..16.min(session.id.len())]
+            ))))?;
+        }
+    }
+
+    Ok(())
 }
 
 // ─── Refresh ─────────────────────────────────────────────────────────────
