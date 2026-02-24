@@ -8,14 +8,13 @@ Rust workspace for Emotiv Cortex v2 tooling and integrations.
 
 **Not affiliated with Emotiv.** This project is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. Emotiv and Emotiv Cortex are trademarks of Emotiv, Inc. This repository builds on and interoperates with the Emotiv Cortex API; for official support and products, see [emotiv.com](https://www.emotiv.com/).
 
-[![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
-
+[CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
 
 ## Crates
 
 - `emotiv-cortex-v2` - typed Rust client for the Emotiv Cortex v2 WebSocket API
 - `emotiv-cortex-tui` - interactive TUI for exploring Cortex APIs and streaming
-  self-documenting LSL outlets
+self-documenting LSL outlets
 
 ## Install
 
@@ -94,9 +93,3 @@ cargo clippy -p emotiv-cortex-v2 --lib --no-default-features --features rustls-t
 cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui --no-default-features -- -W clippy::pedantic
 ```
 
-## Release
-
-Releases are tag-driven. Push a `vX.Y.Z` tag and the release workflow publishes:
-
-1. `emotiv-cortex-v2`
-2. `emotiv-cortex-tui` (after crates.io index propagation)

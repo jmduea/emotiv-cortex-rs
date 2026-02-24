@@ -309,6 +309,7 @@ impl App {
     /// Process an incoming [`AppEvent`], updating state accordingly.
     ///
     /// Returns `true` if the app should quit.
+    #[expect(clippy::too_many_lines)]
     pub fn handle_event(&mut self, event: AppEvent) -> bool {
         match event {
             AppEvent::Terminal(crossterm::event::Event::Key(key))
@@ -428,6 +429,7 @@ impl App {
         self.should_quit
     }
 
+    #[expect(clippy::too_many_lines)]
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
         use crossterm::event::{KeyCode, KeyModifiers};
 

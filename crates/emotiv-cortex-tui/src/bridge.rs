@@ -156,7 +156,10 @@ pub async fn connect_headset_and_create_session(
         }
     }
 
-    Err(last_err.unwrap().into())
+    match last_err {
+        Some(e) => Err(e.into()),
+        None => unreachable!("last_err is Some when all create_session attempts failed"),
+    }
 }
 
 // ─── Phase 3: Disconnect (user-initiated) ───────────────────────────────
