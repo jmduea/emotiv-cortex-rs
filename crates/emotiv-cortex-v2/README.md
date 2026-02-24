@@ -4,10 +4,6 @@ A Rust client for the [Emotiv Cortex v2 WebSocket API](https://emotiv.gitbook.io
 
 [![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/worfklows/ci.yml)
 
-**Pre-release.** This crate is under active development; APIs and behavior may change. Treat as pre-release when depending on it.
-
-**Not affiliated with Emotiv.** This crate is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. For official support and products, see [emotiv.com](https://www.emotiv.com/).
-
 Provides a complete, typed interface to the Emotiv Cortex service for interacting with Emotiv EEG headsets (Insight, EPOC+, EPOC X, EPOC Flex) NOTE: ONLY INSIGHT DEVICES HAVE BEEN TESTED.
 
 ## Features
@@ -129,6 +125,10 @@ Types are grouped by domain:
 - `protocol::training` - detection/training + advanced BCI types
 - `protocol::auth` - user login types
 - `protocol::subjects` - subject and demographic types
+
+**Pre-release.** This crate is under active development; APIs and behavior may change. Treat as pre-release when depending on it.
+
+**Not affiliated with Emotiv.** This crate is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. For official support and products, see [emotiv.com](https://www.emotiv.com/).
 
 ## License
 
