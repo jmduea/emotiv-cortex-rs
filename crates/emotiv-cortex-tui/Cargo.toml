@@ -16,6 +16,10 @@ categories = ["command-line-utilities", "science"]
 [lints]
 workspace = true
 
+[profile.release]
+# Smaller binaries for release (strips symbols; often saves ~30–50%)
+strip = true
+
 [[bin]]
 name = "emotiv-cortex-tui"
 path = "src/main.rs"

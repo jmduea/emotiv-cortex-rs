@@ -43,21 +43,29 @@ jobs:
       # TUI is not published to crates.io; Windows binary is attached to the GitHub Release only.
 
   build-windows:
-    name: Build Windows binary
+    name: Build Windows binaries
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build emotiv-cortex-tui (release)
+      - name: Build emotiv-cortex-tui (release, no LSL)
         run: cargo build -p emotiv-cortex-tui --release --no-default-features
 
-      - name: Upload Windows binary
+      - name: Stash baseline binary
+        run: Copy-Item target/release/emotiv-cortex-tui.exe target/release/emotiv-cortex-tui-nolsl.exe
+
+      - name: Build emotiv-cortex-tui (release, with LSL)
+        run: cargo build -p emotiv-cortex-tui --release --no-default-features --features lsl
+
+      - name: Upload Windows binaries
         uses: actions/upload-artifact@v4
         with:
           name: emotiv-cortex-tui-windows-x86_64
-          path: target/release/emotiv-cortex-tui.exe
+          path: |
+            target/release/emotiv-cortex-tui-nolsl.exe
+            target/release/emotiv-cortex-tui.exe
 
   release:
     name: Create GitHub Release
@@ -68,13 +76,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Windows binary
+      - name: Download Windows binaries
         uses: actions/download-artifact@v4
         with:
           name: emotiv-cortex-tui-windows-x86_64
 
-      - name: Rename asset for release
-        run: mv emotiv-cortex-tui.exe emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
+      - name: Rename assets for release
+        run: |
+          mv emotiv-cortex-tui-nolsl.exe emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
+          mv emotiv-cortex-tui.exe emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -82,6 +92,8 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
           generate_release_notes: true
-          files: emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
+          files: |
+            emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
+            emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
