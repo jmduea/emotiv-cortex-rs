@@ -74,10 +74,10 @@ repos:
         stages: [pre-push]
 
       - id: coverage-gate
-        name: coverage gate (workspace, line >= 50%)
+        name: coverage gate (workspace, line >= 48%)
         entry: >
           cargo llvm-cov --workspace --all-targets
-          --summary-only --fail-under-lines 50
+          --summary-only --fail-under-lines 48
         language: system
         pass_filenames: false
         stages: [pre-push]

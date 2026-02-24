@@ -71,19 +71,26 @@ This repo provides a `pre-commit` configuration with local gates:
   - rustdoc builds for both crates with warnings denied
   - workspace coverage gate (line coverage >= 50%)
 
-Install and enable hooks:
+Install and run checks with **uv** (recommended):
+
+```bash
+uv sync
+cargo install cargo-llvm-cov   # needed for pre-push coverage gate
+uv run pre-commit -- run --all-files
+uv run pre-commit -- run --all-files --hook-stage pre-push
+```
+
+Use repo githooks so Git runs pre-commit via uv:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Or install pre-commit yourself and use its hooks (requires `pre-commit` on PATH, e.g. `pipx install pre-commit`):
 
 ```bash
 pipx install pre-commit
-cargo install cargo-llvm-cov
 pre-commit install --hook-type pre-commit --hook-type pre-push
-```
-
-Run all configured checks manually:
-
-```bash
-pre-commit run --all-files
-pre-commit run --all-files --hook-stage pre-push
 ```
 
 Pedantic linting remains non-blocking for now:

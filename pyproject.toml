@@ -1,0 +1,13 @@
+[project]
+name = "emotiv-cortex-rs"
+version = "0.0.0"
+description = "Emotiv Cortex API client and TUI (project root; crates published separately)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["pre-commit>=3.7.0"]
+
+[project.optional-dependencies]
+dev = ["pre-commit>=3.7.0"]
+
+[tool.uv]
+dev-dependencies = ["pre-commit>=3.7.0"]

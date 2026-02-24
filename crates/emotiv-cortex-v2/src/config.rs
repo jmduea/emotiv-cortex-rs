@@ -467,12 +467,14 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    #[allow(unsafe_code)] // Test-only; guarded by ENV_LOCK; no concurrent env mutation.
     fn set_env_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
         // SAFETY: Test-only helper guarded by `ENV_LOCK`; tests do not spawn threads
         // while mutating process environment variables.
         unsafe { std::env::set_var(key, value) };
     }
 
+    #[allow(unsafe_code)] // Test-only; guarded by ENV_LOCK; no concurrent env mutation.
     fn remove_env_var<K: AsRef<OsStr>>(key: K) {
         // SAFETY: Test-only helper guarded by `ENV_LOCK`; tests do not spawn threads
         // while mutating process environment variables.

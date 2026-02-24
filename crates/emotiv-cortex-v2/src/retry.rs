@@ -264,6 +264,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_retry_exhausted_preserves_last_error() {
+        let result = with_retry(
+            &RetryPolicy::custom(1, Duration::from_millis(1), Duration::from_millis(10)),
+            || async { Err::<i32, _>(CortexError::Timeout { seconds: 5 }) },
+        )
+        .await;
+
+        let err = result.unwrap_err();
+        let CortexError::RetriesExhausted {
+            attempts,
+            last_error,
+        } = &err
+        else {
+            panic!("expected RetriesExhausted, got {err:?}");
+        };
+        assert_eq!(*attempts, 2); // initial + 1 retry
+        assert!(matches!(last_error.as_ref(), CortexError::Timeout { seconds: 5 }));
+        assert!(last_error.is_retryable());
+    }
+
+    #[tokio::test]
     async fn test_non_retryable_error_not_retried() {
         let attempts = AtomicU32::new(0);
 

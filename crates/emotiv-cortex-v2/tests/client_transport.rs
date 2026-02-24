@@ -376,3 +376,354 @@ async fn query_headsets_options_round_trip_over_transport() {
 
     client.disconnect().await.unwrap();
 }
+
+// ─── Error-path tests: protocol and API error mapping ───────────────────────
+
+#[tokio::test]
+async fn rpc_response_null_result_no_error_yields_protocol_error() {
+    let mut server =
+        match start_server_or_skip("rpc_response_null_result_no_error_yields_protocol_error").await
+        {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_json(json!({"jsonrpc": "2.0", "id": rpc_id(&request)}))
+            .await;
+        request
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    assert!(matches!(err, CortexError::ProtocolError { .. }));
+    assert!(
+        err.to_string().contains("no result or error"),
+        "expected protocol error about missing result/error, got: {err}"
+    );
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn rpc_response_malformed_json_yields_protocol_error() {
+    let mut server =
+        match start_server_or_skip("rpc_response_malformed_json_yields_protocol_error").await {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        let id = rpc_id(&request);
+        // Valid numeric id so the client routes to the pending request; "error" as string
+        // so CortexResponse deserialization fails (expects { code, message }).
+        connection
+            .send_json(json!({"jsonrpc": "2.0", "id": id, "error": "not an object"}))
+            .await;
+        request
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    assert!(matches!(err, CortexError::ProtocolError { .. }));
+    assert!(
+        err.to_string().contains("parse") || err.to_string().contains("Protocol"),
+        "expected protocol/parse error, got: {err}"
+    );
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn get_user_login_result_wrong_type_yields_protocol_error() {
+    let mut server = match start_server_or_skip(
+        "get_user_login_result_wrong_type_yields_protocol_error",
+    )
+    .await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_USER_LOGIN)
+            .await;
+        // Result must be an array of UserLoginInfo; a number is invalid.
+        connection.send_result(rpc_id(&request), json!(123)).await;
+        request
+    });
+
+    let err = client.get_user_login().await.unwrap_err();
+    responder.await.unwrap();
+
+    assert!(matches!(err, CortexError::ProtocolError { .. }));
+    assert!(
+        err.to_string().contains("parse")
+            || err.to_string().contains("Protocol")
+            || err.to_string().contains("user login"),
+        "expected protocol/parse error for wrong result type, got: {err}"
+    );
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_error_token_expired_maps_to_token_expired() {
+    let mut server =
+        match start_server_or_skip("api_error_token_expired_maps_to_token_expired").await {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_error(rpc_id(&request), -32015, "cortex token expired")
+            .await;
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    assert!(matches!(err, CortexError::TokenExpired));
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_error_session_error_maps_and_preserves_message() {
+    let mut server =
+        match start_server_or_skip("api_error_session_error_maps_and_preserves_message").await {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_error(
+                rpc_id(&request),
+                -32005,
+                "session already exists for this headset",
+            )
+            .await;
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    match &err {
+        CortexError::SessionError { reason } => assert!(reason.contains("session already exists")),
+        _ => panic!("expected SessionError with message, got {err:?}"),
+    }
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_error_stream_error_maps_and_preserves_message() {
+    let mut server =
+        match start_server_or_skip("api_error_stream_error_maps_and_preserves_message").await {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_error(rpc_id(&request), -32016, "invalid stream name")
+            .await;
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    match &err {
+        CortexError::StreamError { reason } => assert!(reason.contains("invalid stream")),
+        _ => panic!("expected StreamError with message, got {err:?}"),
+    }
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_error_user_not_logged_in_maps_correctly() {
+    let mut server = match start_server_or_skip("api_error_user_not_logged_in_maps_correctly").await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_error(rpc_id(&request), -32033, "user not logged in to emotiv id")
+            .await;
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    assert!(matches!(err, CortexError::UserNotLoggedIn));
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_error_not_approved_maps_correctly() {
+    let mut server = match start_server_or_skip("api_error_not_approved_maps_correctly").await {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_error(rpc_id(&request), -32142, "application not approved")
+            .await;
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    assert!(matches!(err, CortexError::NotApproved));
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_error_license_error_maps_and_preserves_message() {
+    let mut server =
+        match start_server_or_skip("api_error_license_error_maps_and_preserves_message").await {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_error(rpc_id(&request), -32024, "license expired")
+            .await;
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    match &err {
+        CortexError::LicenseError { reason } => assert!(reason.contains("license expired")),
+        _ => panic!("expected LicenseError with message, got {err:?}"),
+    }
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_error_headset_error_maps_and_preserves_message() {
+    let mut server =
+        match start_server_or_skip("api_error_headset_error_maps_and_preserves_message").await {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_error(rpc_id(&request), -32152, "headset not ready")
+            .await;
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    match &err {
+        CortexError::HeadsetError { reason } => assert!(reason.contains("headset not ready")),
+        _ => panic!("expected HeadsetError with message, got {err:?}"),
+    }
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn api_error_method_not_found_includes_method_name() {
+    let mut server =
+        match start_server_or_skip("api_error_method_not_found_includes_method_name").await {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection
+            .recv_request_method(Methods::GET_CORTEX_INFO)
+            .await;
+        connection
+            .send_error(rpc_id(&request), -32601, "getCortexInfo")
+            .await;
+    });
+
+    let err = client.get_cortex_info().await.unwrap_err();
+    responder.await.unwrap();
+
+    match &err {
+        CortexError::MethodNotFound { method } => assert_eq!(method, "getCortexInfo"),
+        _ => panic!("expected MethodNotFound with method name, got {err:?}"),
+    }
+
+    client.disconnect().await.unwrap();
+}

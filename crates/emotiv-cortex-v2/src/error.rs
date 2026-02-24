@@ -340,6 +340,28 @@ mod tests {
     fn test_from_api_error_unknown_code() {
         let err = CortexError::from_api_error(-99999, "something weird");
         assert!(matches!(err, CortexError::ApiError { code: -99999, .. }));
+        assert_eq!(err.to_string(), "Cortex API error -99999: something weird");
+    }
+
+    #[test]
+    fn test_from_api_error_unknown_code_preserves_message() {
+        let err = CortexError::from_api_error(12345, "custom server message");
+        match &err {
+            CortexError::ApiError { code, message } => {
+                assert_eq!(*code, 12345);
+                assert_eq!(message.as_str(), "custom server message");
+            }
+            _ => panic!("expected ApiError, got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_api_error_method_not_found_preserves_method() {
+        let err = CortexError::from_api_error(-32601, "authorize");
+        match &err {
+            CortexError::MethodNotFound { method } => assert_eq!(method, "authorize"),
+            _ => panic!("expected MethodNotFound, got {err:?}"),
+        }
     }
 
     #[test]
