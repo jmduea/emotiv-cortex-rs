@@ -5,11 +5,15 @@ use serde::{Deserialize, Serialize};
 /// A JSON-RPC 2.0 request to the Cortex API.
 #[derive(Debug, Serialize)]
 pub struct CortexRequest {
+    /// Caller-assigned request identifier, echoed back in the response.
     pub id: u64,
+    /// Protocol version string (always `"2.0"`).
     pub jsonrpc: &'static str,
+    /// Cortex API method name (e.g. `"queryHeadsets"`, `"authorize"`).
     pub method: &'static str,
+    /// Optional method parameters. `serde_json::Value` keeps the struct
+    /// generic across all Cortex methods without per-method param types.
     #[serde(skip_serializing_if = "Option::is_none")]
-    // Using `serde_json::Value` allows us to flexibly construct params for different methods without needing a separate struct for each method's parameters.
     pub params: Option<serde_json::Value>,
 }
 
@@ -36,8 +40,12 @@ impl CortexRequest {
 /// A JSON-RPC 2.0 response from the Cortex API.
 #[derive(Debug, Deserialize)]
 pub struct CortexResponse {
+    /// Request identifier echoed from the corresponding [`CortexRequest`].
+    /// `None` for server-initiated notifications.
     pub id: Option<u64>,
+    /// Successful result payload, mutually exclusive with [`error`](Self::error).
     pub result: Option<serde_json::Value>,
+    /// Error payload, mutually exclusive with [`result`](Self::result).
     pub error: Option<RpcError>,
 }
 
@@ -48,7 +56,9 @@ pub struct CortexResponse {
 /// to convert to a semantic error type.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RpcError {
+    /// Numeric error code defined by the Cortex API (see [`ErrorCodes`](super::constants::ErrorCodes)).
     pub code: i32,
+    /// Human-readable error description.
     pub message: String,
 }
 

@@ -28,10 +28,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         ConnectionPhase::Ready => {
             // Headset ID
             if let Some(ref id) = app.headset_id {
-                spans.push(Span::styled(
-                    id.as_str(),
-                    Style::default().fg(Color::Cyan),
-                ));
+                spans.push(Span::styled(id.as_str(), Style::default().fg(Color::Cyan)));
             } else {
                 spans.push(Span::styled(
                     "No headset",
@@ -54,10 +51,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     Style::default().fg(color),
                 ));
             } else {
-                spans.push(Span::styled(
-                    "🔋 --",
-                    Style::default().fg(Color::DarkGray),
-                ));
+                spans.push(Span::styled("🔋 --", Style::default().fg(Color::DarkGray)));
             }
 
             spans.push(Span::raw(" │ "));
@@ -95,10 +89,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
 
             // LSL indicator
             #[cfg(all(feature = "lsl", not(target_os = "linux")))]
-            if app.lsl_streaming.is_some() {
+            if let Some(ref handle) = app.lsl_streaming {
                 spans.push(Span::raw(" │ "));
                 spans.push(Span::styled(
-                    "LSL ▶",
+                    handle.format_status(),
                     Style::default().fg(Color::Magenta),
                 ));
             }
@@ -106,10 +100,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             // Uptime
             let uptime = format_duration(app.uptime());
             spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                uptime,
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(uptime, Style::default().fg(Color::DarkGray)));
         }
         phase => {
             spans.push(Span::styled(
@@ -119,8 +110,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let bar = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(Color::Black));
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Black));
     frame.render_widget(bar, area);
 }
 

@@ -8,7 +8,7 @@ This release is a breaking redesign focused on transport safety and request-DTO 
 - Rust edition updated to `2024`
 - Crate versions:
   - `emotiv-cortex-v2 = 0.3.0`
-  - `emotiv-cortex-cli = 0.3.0`
+  - `emotiv-cortex-tui = 0.3.0`
 
 ## Method mapping (old -> new)
 

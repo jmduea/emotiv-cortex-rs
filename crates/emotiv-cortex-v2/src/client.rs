@@ -314,6 +314,21 @@ impl CortexClient {
     /// The Cortex service must be running on the local machine.
     /// TLS is configured based on the [`CortexConfig`] settings.
     ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use emotiv_cortex_v2::{CortexClient, CortexConfig};
+    ///
+    /// # async fn demo() -> emotiv_cortex_v2::CortexResult<()> {
+    /// let config = CortexConfig::discover(None)?;
+    /// let mut client = CortexClient::connect(&config).await?;
+    ///
+    /// let info = client.get_cortex_info().await?;
+    /// client.disconnect().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
     /// # Errors
     /// Returns any error produced by the underlying Cortex API call,
     /// including connection, authentication, protocol, timeout, and configuration errors.
@@ -1582,19 +1597,20 @@ impl CortexClient {
         cortex_token: &str,
         session_id: &str,
         streams: &[&str],
-    ) -> CortexResult<()> {
-        self.call(
-            Methods::SUBSCRIBE,
-            serde_json::json!({
-                "cortexToken": cortex_token,
-                "session": session_id,
-                "streams": streams,
-            }),
-        )
-        .await?;
+    ) -> CortexResult<serde_json::Value> {
+        let resp = self
+            .call(
+                Methods::SUBSCRIBE,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "session": session_id,
+                    "streams": streams,
+                }),
+            )
+            .await?;
 
         tracing::info!(session_id, ?streams, "Subscribed to data streams");
-        Ok(())
+        Ok(resp)
     }
 
     /// Unsubscribe from one or more data streams.

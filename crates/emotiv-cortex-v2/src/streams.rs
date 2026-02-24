@@ -159,6 +159,30 @@ fn add_channel(
 ///
 /// [`HeadsetModel::num_channels()`]: crate::headset::HeadsetModel::num_channels
 ///
+/// # Examples
+///
+/// ```no_run
+/// use futures_util::StreamExt;
+/// use emotiv_cortex_v2::{CortexClient, CortexConfig, streams};
+/// use emotiv_cortex_v2::headset::HeadsetModel;
+///
+/// # async fn demo() -> emotiv_cortex_v2::CortexResult<()> {
+/// let config = CortexConfig::discover(None)?;
+/// let mut client = CortexClient::connect(&config).await?;
+/// let token = client.authenticate(&config.client_id, &config.client_secret).await?;
+///
+/// let session = client.create_session(&token, "INSIGHT-12345678").await?;
+/// let mut eeg = streams::subscribe_eeg(
+///     &client, &token, &session.id, HeadsetModel::Insight.num_channels(),
+/// ).await?;
+///
+/// while let Some(sample) = eeg.next().await {
+///     println!("EEG sample #{}: {:?}", sample.counter, sample.channels);
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
 /// # Errors
 /// Returns any error produced by stream channel registration or
 /// subscription RPC calls.
@@ -321,13 +345,36 @@ pub async fn subscribe_metrics(
 ) -> CortexResult<Pin<Box<dyn Stream<Item = PerformanceMetrics> + Send>>> {
     let rx = add_channel(client, Streams::MET)?;
 
-    client
+    let resp = client
         .subscribe_streams(cortex_token, session_id, &[Streams::MET])
         .await?;
 
-    Ok(Box::pin(TypedStream::new(rx, |event| {
+    let cols: Vec<String> = resp
+        .get("success")
+        .and_then(|s| s.as_array())
+        .and_then(|a| a.first())
+        .and_then(|entry| entry.get("cols"))
+        .and_then(|c| c.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let col_idx = |name: &str| cols.iter().position(|c| c == name);
+    let att_idx = col_idx("attention");
+    let eng_idx = col_idx("eng");
+    let exc_idx = col_idx("exc");
+    let lex_idx = col_idx("lex");
+    let str_idx = col_idx("str");
+    let rel_idx = col_idx("rel");
+    let int_idx = col_idx("int");
+    let foc_idx = col_idx("foc");
+
+    Ok(Box::pin(TypedStream::new(rx, move |event| {
         let met = event.get("met")?.as_array()?;
-        let f = |i: usize| -> Option<f32> {
+        let val = |i: usize| -> Option<f32> {
             met.get(i)
                 .and_then(serde_json::Value::as_f64)
                 .and_then(f64_to_f32)
@@ -335,14 +382,14 @@ pub async fn subscribe_metrics(
         let time = event.get("time")?.as_f64()?;
         Some(PerformanceMetrics {
             timestamp: seconds_to_micros_i64(time)?,
-            engagement: f(0),
-            excitement: f(1),
-            long_excitement: f(2),
-            stress: f(3),
-            relaxation: f(4),
-            interest: f(5),
-            attention: f(6),
-            focus: f(7),
+            attention: att_idx.and_then(|i| val(i)),
+            engagement: eng_idx.and_then(|i| val(i)),
+            excitement: exc_idx.and_then(|i| val(i)),
+            long_excitement: lex_idx.and_then(|i| val(i)),
+            stress: str_idx.and_then(|i| val(i)),
+            relaxation: rel_idx.and_then(|i| val(i)),
+            interest: int_idx.and_then(|i| val(i)),
+            focus: foc_idx.and_then(|i| val(i)),
         })
     })))
 }

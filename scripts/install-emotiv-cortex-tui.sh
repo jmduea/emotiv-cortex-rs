@@ -70,14 +70,14 @@ if [[ "${enable_lsl}" == "true" ]]; then
     exit 1
   fi
   feature_args+=(--features lsl)
-  echo "Installing emotiv-cortex-cli (with LSL) to: ${install_root}/bin"
+  echo "Installing emotiv-cortex-tui (with LSL) to: ${install_root}/bin"
 else
-  echo "Installing emotiv-cortex-cli to: ${install_root}/bin"
+  echo "Installing emotiv-cortex-tui to: ${install_root}/bin"
   echo "  Tip: use --lsl to enable Lab Streaming Layer support (Windows/macOS)"
 fi
 
 cargo install \
-  --path "${repo_root}/crates/emotiv-cortex-cli" \
+  --path "${repo_root}/crates/emotiv-cortex-tui" \
   --root "${install_root}" \
   --force \
   "${feature_args[@]+"${feature_args[@]}"}" \
@@ -88,11 +88,11 @@ case ":$PATH:" in
   *":${bin_dir}:"*) ;;
   *)
     echo
-    echo "Add this to your shell profile to run emotiv-cortex-cli from anywhere:"
+    echo "Add this to your shell profile to run emotiv-cortex-tui from anywhere:"
     echo "  export PATH=\"${bin_dir}:\$PATH\""
     ;;
 esac
 
 echo
 echo "Installed. Try:"
-echo "  emotiv-cortex-cli --help"
+echo "  emotiv-cortex-tui --help"

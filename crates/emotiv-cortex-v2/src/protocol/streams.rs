@@ -139,36 +139,35 @@ pub struct DeviceQuality {
 impl DeviceQuality {
     /// Parse a `DevEvent.dev` array into structured quality data.
     ///
-    /// The array format varies by headset:
-    /// - Insight (5ch): `[battery, signal, AF3_cq, AF4_cq, T7_cq, T8_cq, Pz_cq, overall, battery_pct]`
-    /// - EPOC (14ch): `[battery, signal, AF3_cq, ..., AF4_cq, overall, battery_pct]`
+    /// The Cortex V2 API sends the `dev` array in a **nested** format:
     ///
-    /// The `num_channels` parameter tells us how many CQ values to extract.
+    /// ```text
+    /// [battery_level, signal, [cq1, cq2, …, cqN, overall_cq], battery_pct]
+    /// ```
+    ///
+    /// The sub-array at index 2 contains `num_channels` contact-quality
+    /// values (0–4) followed by one overall quality value (0–100).
     #[must_use]
     pub fn from_dev_array(dev: &[serde_json::Value], num_channels: usize) -> Option<Self> {
-        // Minimum: battery + signal + num_channels CQ values + overall + battery_pct
-        if dev.len() < 2 + num_channels + 2 {
+        if dev.len() < 4 {
             return None;
         }
 
         let battery_level = u8::try_from(dev[0].as_u64()?).ok()?;
         let signal_strength = f64_to_f32(dev[1].as_f64()?)?;
 
-        let channel_quality: Vec<f32> = dev[2..2 + num_channels]
-            .iter()
-            .filter_map(serde_json::Value::as_f64)
-            .map(|cq| f64_to_f32(cq / 4.0)) // Normalize 0–4 to 0.0–1.0
-            .collect::<Option<Vec<f32>>>()?;
-
-        if channel_quality.len() != num_channels {
+        let cq_array = dev[2].as_array()?;
+        if cq_array.len() < num_channels + 1 {
             return None;
         }
 
-        let overall_idx = 2 + num_channels;
-        let battery_pct_idx = overall_idx + 1;
+        let channel_quality: Vec<f32> = cq_array[..num_channels]
+            .iter()
+            .map(|v| v.as_f64().and_then(|cq| f64_to_f32(cq / 4.0)))
+            .collect::<Option<Vec<f32>>>()?;
 
-        let overall_quality = f64_to_f32(dev.get(overall_idx)?.as_f64()? / 100.0)?;
-        let battery_percent = u8::try_from(dev.get(battery_pct_idx)?.as_u64()?).ok()?;
+        let overall_quality = f64_to_f32(cq_array.get(num_channels)?.as_f64()? / 100.0)?;
+        let battery_percent = u8::try_from(dev.get(3)?.as_u64()?).ok()?;
 
         Some(Self {
             battery_level,
@@ -572,9 +571,9 @@ mod tests {
     #[test]
     fn test_parse_device_quality_insight() {
         // Insight has 5 channels: AF3, AF4, T7, T8, Pz
-        // Format: [battery, signal, AF3_cq, AF4_cq, T7_cq, T8_cq, Pz_cq, overall, battery_pct]
+        // Cortex V2 nested format: [battery, signal, [cq1..cqN, overall], battery_pct]
         let dev: Vec<serde_json::Value> =
-            serde_json::from_str(r"[4, 1, 4, 3, 2, 4, 1, 75, 88]").unwrap();
+            serde_json::from_str(r"[4, 1.0, [4, 3, 2, 4, 1, 75], 88]").unwrap();
 
         let quality = DeviceQuality::from_dev_array(&dev, 5).unwrap();
         assert_eq!(quality.battery_level, 4);
@@ -590,6 +589,12 @@ mod tests {
     #[test]
     fn test_parse_device_quality_too_short() {
         let dev: Vec<serde_json::Value> = serde_json::from_str(r"[4, 1]").unwrap();
+        assert!(DeviceQuality::from_dev_array(&dev, 5).is_none());
+    }
+
+    #[test]
+    fn test_parse_device_quality_nested_cq_too_short() {
+        let dev: Vec<serde_json::Value> = serde_json::from_str(r"[4, 1.0, [4, 3], 88]").unwrap();
         assert!(DeviceQuality::from_dev_array(&dev, 5).is_none());
     }
 
@@ -648,12 +653,12 @@ mod tests {
         let json = r#"{
             "sid": "session-uuid-123",
             "time": 1609459200.0,
-            "dev": [4, 1, 4, 3, 2, 4, 1, 75, 88]
+            "dev": [4, 1.0, [4, 3, 2, 4, 1, 75], 88]
         }"#;
 
         let event: DevEvent = serde_json::from_str(json).unwrap();
         assert_eq!(event.sid, "session-uuid-123");
-        assert_eq!(event.dev.len(), 9);
+        assert_eq!(event.dev.len(), 4);
     }
 
     #[test]
@@ -752,7 +757,7 @@ mod tests {
         let json = r#"{
             "sid": "s1",
             "time": 1.0,
-            "dev": [4, 1, 3, 2, 1, 0, 4, 50, 75]
+            "dev": [4, 1.0, [3, 2, 1, 0, 4, 50], 75]
         }"#;
 
         let event: StreamEvent = serde_json::from_str(json).unwrap();

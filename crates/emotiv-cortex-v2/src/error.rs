@@ -157,6 +157,18 @@ impl CortexError {
     ///
     /// Legacy Cortex deployments may also return older codes such as
     /// `-32102` and `-32122`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::CortexError;
+    ///
+    /// let err = CortexError::from_api_error(-32015, "token expired");
+    /// assert!(matches!(err, CortexError::TokenExpired));
+    ///
+    /// let err = CortexError::from_api_error(-32001, "no headset");
+    /// assert!(matches!(err, CortexError::NoHeadsetFound));
+    /// ```
     pub fn from_api_error(code: i32, message: impl Into<String>) -> Self {
         let message = message.into();
         match code {
@@ -180,6 +192,16 @@ impl CortexError {
     }
 
     /// Returns `true` if this error is transient and the operation can be retried.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::CortexError;
+    ///
+    /// assert!(CortexError::Timeout { seconds: 10 }.is_retryable());
+    /// assert!(CortexError::CortexStarting.is_retryable());
+    /// assert!(!CortexError::NoHeadsetFound.is_retryable());
+    /// ```
     #[must_use]
     pub fn is_retryable(&self) -> bool {
         matches!(
@@ -193,6 +215,15 @@ impl CortexError {
 
     /// Returns `true` if this error indicates the connection is dead
     /// and a reconnect is needed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::CortexError;
+    ///
+    /// assert!(CortexError::NotConnected.is_connection_error());
+    /// assert!(!CortexError::TokenExpired.is_connection_error());
+    /// ```
     #[must_use]
     pub fn is_connection_error(&self) -> bool {
         matches!(

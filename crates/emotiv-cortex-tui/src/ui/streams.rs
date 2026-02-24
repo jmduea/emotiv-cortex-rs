@@ -4,17 +4,16 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Axis, Block, Borders, Chart, Dataset, GraphType, Paragraph, Sparkline};
+use ratatui::widgets::{
+    Axis, Bar, BarChart, BarGroup, Block, Borders, Chart, Dataset, GraphType, Paragraph, Sparkline,
+};
 
 use crate::app::{App, StreamView};
 
 /// Render the streams tab content.
 pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     // Header showing current view + how to switch
-    let header_area = Rect {
-        height: 1,
-        ..area
-    };
+    let header_area = Rect { height: 1, ..area };
     let content_area = Rect {
         y: area.y + 1,
         height: area.height.saturating_sub(1),
@@ -25,7 +24,9 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(" View: ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
             app.stream_view.label(),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             "  (press 'v' to cycle)",
@@ -50,20 +51,17 @@ fn draw_eeg(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 
     if app.eeg_buffers.is_empty() {
-        let msg = Paragraph::new("  Waiting for EEG data…")
-            .style(Style::default().fg(Color::DarkGray));
+        let msg =
+            Paragraph::new("  Waiting for EEG data…").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(msg, inner);
         return;
     }
 
     let num_ch = app.eeg_buffers.len();
-    let channel_names: Vec<String> = app
-        .headset_model
-        .as_ref()
-        .map_or_else(
-            || (0..num_ch).map(|i| format!("Ch{i}")).collect(),
-            |m| m.channel_names().iter().map(|s| (*s).to_string()).collect(),
-        );
+    let channel_names: Vec<String> = app.headset_model.as_ref().map_or_else(
+        || (0..num_ch).map(|i| format!("Ch{i}")).collect(),
+        |m| m.channel_names().iter().map(|s| (*s).to_string()).collect(),
+    );
 
     let constraints: Vec<Constraint> = (0..num_ch)
         .map(|_| Constraint::Ratio(1, u32::try_from(num_ch).unwrap_or(u32::MAX)))
@@ -106,7 +104,9 @@ fn draw_eeg(frame: &mut Frame, app: &App, area: Rect) {
             buf.iter()
                 .map(|&v| {
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    { ((v - min) / range * 100.0) as u64 }
+                    {
+                        ((v - min) / range * 100.0) as u64
+                    }
                 })
                 .collect()
         };
@@ -223,7 +223,7 @@ fn draw_motion_chart(
     frame.render_widget(chart, area);
 }
 
-/// Band power — stacked bar-like display per channel.
+/// Band power — grouped column chart with channels along the horizontal axis.
 fn draw_band_power(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .title(" Band Power (θ α βL βH γ) ")
@@ -238,59 +238,91 @@ fn draw_band_power(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let num_ch = app.band_power_buffers.len();
-    let channel_names: Vec<String> = app
-        .headset_model
-        .as_ref()
-        .map_or_else(
-            || (0..num_ch).map(|i| format!("Ch{i}")).collect(),
-            |m| m.channel_names().iter().map(|s| (*s).to_string()).collect(),
-        );
-
-    let constraints: Vec<Constraint> = (0..num_ch)
-        .map(|_| Constraint::Ratio(1, u32::try_from(num_ch).unwrap_or(u32::MAX)))
-        .collect();
-
-    let rows = Layout::default()
+    let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(constraints)
+        .constraints([Constraint::Length(1), Constraint::Min(4)])
         .split(inner);
 
     let band_colors = [
-        Color::Blue,     // theta
-        Color::Green,    // alpha
-        Color::Yellow,   // beta low
-        Color::Red,      // beta high
-        Color::Magenta,  // gamma
+        Color::Blue,    // theta
+        Color::Green,   // alpha
+        Color::Yellow,  // beta low
+        Color::Red,     // beta high
+        Color::Magenta, // gamma
     ];
-    let band_labels = ["θ", "α", "βL", "βH", "γ"];
 
-    for (i, buf) in app.band_power_buffers.iter().enumerate() {
-        let label = channel_names.get(i).map_or("?", |s| s.as_str());
-        let latest = buf.back().copied().unwrap_or([0.0; 5]);
-        let total: f32 = latest.iter().sum::<f32>().max(0.001);
+    let legend_spans: Vec<Span<'_>> = [
+        ("θ Theta", band_colors[0]),
+        ("α Alpha", band_colors[1]),
+        ("βL BetaL", band_colors[2]),
+        ("βH BetaH", band_colors[3]),
+        ("γ Gamma", band_colors[4]),
+    ]
+    .into_iter()
+    .flat_map(|(label, color)| {
+        [
+            Span::styled(" █ ", Style::default().fg(color)),
+            Span::styled(label, Style::default().fg(Color::DarkGray)),
+        ]
+    })
+    .collect();
+    frame.render_widget(Paragraph::new(Line::from(legend_spans)), chunks[0]);
 
-        let spans: Vec<Span<'_>> = latest
-            .iter()
-            .enumerate()
-            .map(|(b, &val)| {
-                let pct = val / total * 100.0;
-                Span::styled(
-                    format!(" {}:{:.0}% ", band_labels[b], pct),
-                    Style::default().fg(band_colors[b]),
-                )
-            })
-            .collect();
+    let num_ch = app.band_power_buffers.len();
+    let channel_names: Vec<String> = app.headset_model.as_ref().map_or_else(
+        || (0..num_ch).map(|i| format!("Ch{i}")).collect(),
+        |m| m.channel_names().iter().map(|s| (*s).to_string()).collect(),
+    );
 
-        let line = Line::from(
-            std::iter::once(Span::styled(
-                format!(" {label:<5} "),
-                Style::default().add_modifier(Modifier::BOLD),
-            ))
-            .chain(spans)
-            .collect::<Vec<_>>(),
-        );
+    let groups: Vec<BarGroup<'_>> = app
+        .band_power_buffers
+        .iter()
+        .enumerate()
+        .map(|(i, buf)| {
+            let label = channel_names
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| format!("Ch{i}"));
+            let latest = buf.back().copied().unwrap_or([0.0; 5]);
+            let total: f32 = latest.iter().sum::<f32>().max(0.001);
 
-        frame.render_widget(Paragraph::new(line), rows[i]);
+            let bars: Vec<Bar<'_>> = latest
+                .iter()
+                .enumerate()
+                .map(|(b, &val)| {
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let pct = (val / total * 100.0) as u64;
+                    Bar::default()
+                        .value(pct)
+                        .style(Style::default().fg(band_colors[b]))
+                        .value_style(
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        )
+                })
+                .collect();
+
+            BarGroup::default()
+                .label(Line::from(Span::styled(
+                    label,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )))
+                .bars(&bars)
+        })
+        .collect();
+
+    let mut chart = BarChart::default()
+        .bar_width(3)
+        .bar_gap(0)
+        .group_gap(3)
+        .max(100);
+
+    for group in groups {
+        chart = chart.data(group);
     }
+
+    frame.render_widget(chart, chunks[1]);
 }

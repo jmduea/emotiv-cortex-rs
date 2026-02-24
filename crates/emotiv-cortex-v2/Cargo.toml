@@ -11,6 +11,7 @@ documentation = "https://docs.rs/emotiv-cortex-v2"
 keywords = ["emotiv", "cortex", "eeg", "bci", "brain-computer-interface"]
 categories = ["api-bindings", "science"]
 readme = "README.md"
+exclude = ["tests/", ".github/"]
 
 [lints]
 workspace = true
@@ -28,12 +29,17 @@ config-toml = ["dep:toml"]
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = [
+    "connect",
+] }
 native-tls = { version = "0.2", optional = true }
 rustls = { version = "0.23", optional = true }
 rustls-pki-types = { version = "1", optional = true }
 futures-core = "0.3"
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+futures-util = { version = "0.3", default-features = false, features = [
+    "sink",
+    "std",
+] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

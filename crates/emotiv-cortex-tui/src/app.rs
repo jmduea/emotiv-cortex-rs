@@ -371,6 +371,9 @@ impl App {
                 self.phase = ConnectionPhase::Ready;
                 self.log(LogEntry::info("Connection ready"));
             }
+            AppEvent::StreamsSubscribed(streams) => {
+                self.subscribed_streams = streams.into_iter().collect();
+            }
             AppEvent::ConnectionFailed => {
                 self.phase = ConnectionPhase::Discovered;
                 self.log(LogEntry::warn(
@@ -692,7 +695,7 @@ impl App {
                         model: result.model.clone(),
                     });
 
-                    if let Err(e) = crate::bridge::subscribe_default_streams(
+                    match crate::bridge::subscribe_default_streams(
                         &client,
                         &token,
                         &result.session_id,
@@ -702,9 +705,14 @@ impl App {
                     )
                     .await
                     {
-                        let _ = tx.send(AppEvent::Log(LogEntry::error(format!(
-                            "Stream subscription failed: {e}"
-                        ))));
+                        Ok(streams) => {
+                            let _ = tx.send(AppEvent::StreamsSubscribed(streams));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(AppEvent::Log(LogEntry::error(format!(
+                                "Stream subscription failed: {e}"
+                            ))));
+                        }
                     }
                 }
                 Err(e) => {

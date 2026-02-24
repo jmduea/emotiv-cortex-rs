@@ -13,11 +13,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     if app.phase != ConnectionPhase::Ready {
         let loading = Paragraph::new(app.phase.label())
             .style(Style::default().fg(Color::Yellow))
-            .block(
-                Block::default()
-                    .title(" Dashboard ")
-                    .borders(Borders::ALL),
-            );
+            .block(Block::default().title(" Dashboard ").borders(Borders::ALL));
         frame.render_widget(loading, area);
         return;
     }
@@ -104,10 +100,7 @@ fn draw_session_info(frame: &mut Frame, app: &App, area: Rect) {
     // Facial expression (latest)
     if let Some(ref fe) = app.facial_expression {
         lines.push(Line::from(vec![
-            Span::styled(
-                " Face: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(" Face: ", Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(format!(
                 "eye={} upper={} ({:.2}) lower={} ({:.2})",
                 fe.eye_action,
@@ -143,12 +136,12 @@ fn draw_metrics_panel(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let metrics = [
+        ("Attention ", m.attention),
         ("Engagement", m.engagement),
         ("Excitement", m.excitement),
-        ("Stress    ", m.stress),
-        ("Relaxation", m.relaxation),
         ("Interest  ", m.interest),
-        ("Focus     ", m.focus),
+        ("Relaxation", m.relaxation),
+        ("Stress    ", m.stress),
     ];
 
     // 2 lines per metric: label line + gauge
@@ -169,10 +162,7 @@ fn draw_metrics_panel(frame: &mut Frame, app: &App, area: Rect) {
 
         let label_line = Line::from(vec![
             Span::raw("  "),
-            Span::styled(
-                *label,
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(*label, Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(format!("  {:.0}%", val * 100.0)),
         ]);
         frame.render_widget(Paragraph::new(label_line), rows[i * 2]);

@@ -24,7 +24,7 @@ jobs:
 
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           V2_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-v2/Cargo.toml | head -n1)
-          CLI_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-cli/Cargo.toml | head -n1)
+          CLI_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-tui/Cargo.toml | head -n1)
 
           if [[ -z "$V2_VERSION" || -z "$CLI_VERSION" ]]; then
             echo "Could not parse crate versions."
@@ -32,7 +32,7 @@ jobs:
           fi
 
           if [[ "$TAG_VERSION" != "$V2_VERSION" || "$TAG_VERSION" != "$CLI_VERSION" ]]; then
-            echo "Tag version ($TAG_VERSION) must match both crate versions (v2=$V2_VERSION, cli=$CLI_VERSION)."
+            echo "Tag version ($TAG_VERSION) must match both crate versions (v2=$V2_VERSION, tui=$CLI_VERSION)."
             exit 1
           fi
 
@@ -59,8 +59,7 @@ jobs:
           echo "Timed out waiting for crates.io index propagation."
           exit 1
 
-      - name: Publish emotiv-cortex-cli
-        run: cargo publish -p emotiv-cortex-cli
+      - name: Publish emotiv-cortex-tui
+        run: cargo publish -p emotiv-cortex-tui
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-

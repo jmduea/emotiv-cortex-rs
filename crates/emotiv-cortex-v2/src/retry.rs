@@ -67,6 +67,15 @@ pub enum RetryPolicy {
 impl RetryPolicy {
     /// No retries. Use for non-idempotent operations like `authorize`,
     /// `createSession`, `createRecord`, `injectMarker`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::retry::RetryPolicy;
+    ///
+    /// let policy = RetryPolicy::none();
+    /// assert!(matches!(policy, RetryPolicy::None));
+    /// ```
     #[must_use]
     pub fn none() -> Self {
         Self::None
@@ -107,6 +116,15 @@ impl RetryPolicy {
     }
 
     /// Custom backoff policy.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::retry::RetryPolicy;
+    /// use std::time::Duration;
+    ///
+    /// let policy = RetryPolicy::custom(5, Duration::from_millis(200), Duration::from_secs(30));
+    /// ```
     #[must_use]
     pub fn custom(max_retries: u32, base_delay: Duration, max_delay: Duration) -> Self {
         Self::Backoff {

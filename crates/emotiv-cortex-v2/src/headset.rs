@@ -132,6 +132,16 @@ impl HeadsetModel {
     }
 
     /// Get the standard EEG channel configuration for this headset model.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::headset::HeadsetModel;
+    ///
+    /// let config = HeadsetModel::EpocX.channel_config();
+    /// assert_eq!(config.channels.len(), 14);
+    /// assert_eq!(config.sampling_rate_hz, 256.0);
+    /// ```
     #[must_use]
     pub fn channel_config(&self) -> HeadsetChannelConfig {
         let (names, rate): (&[&str], f64) = match self {
@@ -154,6 +164,15 @@ impl HeadsetModel {
     }
 
     /// Number of EEG channels for this headset model.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::headset::HeadsetModel;
+    ///
+    /// assert_eq!(HeadsetModel::Insight.num_channels(), 5);
+    /// assert_eq!(HeadsetModel::EpocX.num_channels(), 14);
+    /// ```
     #[must_use]
     pub fn num_channels(&self) -> usize {
         match self {
@@ -174,6 +193,15 @@ impl HeadsetModel {
     }
 
     /// Channel names for this headset model.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::headset::HeadsetModel;
+    ///
+    /// let names = HeadsetModel::Insight.channel_names();
+    /// assert_eq!(names, &["AF3", "AF4", "T7", "T8", "Pz"]);
+    /// ```
     #[must_use]
     pub fn channel_names(&self) -> &[&str] {
         match self {

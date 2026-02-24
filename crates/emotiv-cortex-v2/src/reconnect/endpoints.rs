@@ -276,7 +276,7 @@ impl ResilientClient {
             let names = stream_names.clone();
             async move {
                 let refs: Vec<&str> = names.iter().map(std::string::String::as_str).collect();
-                c.subscribe_streams(&token, &sid, &refs).await
+                c.subscribe_streams(&token, &sid, &refs).await.map(|_| ())
             }
         })
         .await

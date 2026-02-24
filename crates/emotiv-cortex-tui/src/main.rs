@@ -1,4 +1,4 @@
-//! # emotiv-cortex-cli
+//! # emotiv-cortex-tui
 //!
 //! Terminal UI dashboard for the Emotiv Cortex v2 API.
 //!
@@ -36,7 +36,7 @@ use emotiv_cortex_v2::{CortexClient, CortexConfig};
 
 /// Terminal UI dashboard for the Emotiv Cortex v2 API.
 #[derive(Parser)]
-#[command(name = "emotiv-cortex-cli", version, about)]
+#[command(name = "emotiv-cortex-tui", version, about)]
 struct Cli {
     /// Path to cortex.toml config file
     #[arg(short, long)]
@@ -89,7 +89,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Connect ──────────────────────────────────────────────────────
     let client = CortexClient::connect(&config).await.map_err(|e| {
-        format!("Connection to {} failed: {e}\nMake sure the EMOTIV Launcher is running.", config.cortex_url)
+        format!(
+            "Connection to {} failed: {e}\nMake sure the EMOTIV Launcher is running.",
+            config.cortex_url
+        )
     })?;
 
     // ── App state ────────────────────────────────────────────────────
@@ -107,11 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tui = tui::Tui::enter()?;
 
     // ── Spawn authenticate + discover background task ────────────────
-    spawn_authenticate(
-        Arc::clone(&client),
-        app.config.clone(),
-        tx.clone(),
-    );
+    spawn_authenticate(Arc::clone(&client), app.config.clone(), tx.clone());
 
     // ── Main event loop ──────────────────────────────────────────────
     let mut terminal_events = EventStream::new();
@@ -157,9 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(all(feature = "lsl", not(target_os = "linux")))]
     if let Some(lsl_handle) = app.lsl_streaming.take() {
         if let (Some(token), Some(session_id)) = (&app.token, &app.session_id) {
-            let _ =
-                lsl::stop_lsl_streaming(lsl_handle, &app.client, token, session_id)
-                    .await;
+            let _ = lsl::stop_lsl_streaming(lsl_handle, &app.client, token, session_id).await;
         }
     }
 

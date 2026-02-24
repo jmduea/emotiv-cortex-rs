@@ -55,6 +55,8 @@ pub enum AppEvent {
     ConnectionFailed,
     /// Headset disconnected — session closed, phase returns to Discovered.
     Disconnected,
+    /// Streams successfully subscribed — updates the active-streams list.
+    StreamsSubscribed(Vec<crate::app::StreamType>),
     /// Informational / error log entry.
     Log(LogEntry),
     /// Request application quit.

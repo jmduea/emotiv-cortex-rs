@@ -345,6 +345,26 @@ pub async fn subscribe_default_streams(
         subscribed.push(StreamType::Motion);
     }
 
+    // Subscribe to band power
+    {
+        let num_ch = model.num_channels();
+        let mut stream = streams::subscribe_band_power(client, token, session_id, num_ch).await?;
+        let tx = tx.clone();
+        let mut shutdown_rx = shutdown.subscribe();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    item = stream.next() => {
+                        let Some(data) = item else { break };
+                        if tx.send(AppEvent::BandPower(data)).is_err() { break; }
+                    }
+                    _ = shutdown_rx.recv() => break,
+                }
+            }
+        });
+        subscribed.push(StreamType::BandPower);
+    }
+
     tx.send(AppEvent::Log(LogEntry::info(format!(
         "Subscribed to {} streams",
         subscribed.len()

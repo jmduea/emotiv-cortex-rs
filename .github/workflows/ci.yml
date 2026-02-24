@@ -45,16 +45,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo clippy -p emotiv-cortex-cli --bin emotiv-cortex-cli \
+          cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui \
             --no-default-features \
             -- -D clippy::unwrap_used -D clippy::expect_used \
             -D clippy::panic -D clippy::todo -D clippy::unimplemented \
             2>&1 | tee clippy-cli.txt
 
           warning_count=$(grep -cE '^warning(\[[^]]+\])?:' clippy-cli.txt || true)
-          echo "emotiv-cortex-cli clippy warnings: ${warning_count} (budget: ${CLIPPY_WARNINGS_CLI_MAX})"
+          echo "emotiv-cortex-tui clippy warnings: ${warning_count} (budget: ${CLIPPY_WARNINGS_CLI_MAX})"
           if [ "${warning_count}" -gt "${CLIPPY_WARNINGS_CLI_MAX}" ]; then
-            echo "clippy warning budget exceeded for emotiv-cortex-cli"
+            echo "clippy warning budget exceeded for emotiv-cortex-tui"
             exit 1
           fi
 
@@ -68,7 +68,7 @@ jobs:
       - name: Clippy pedantic report (CLI no default features)
         continue-on-error: true
         run: >
-          cargo clippy -p emotiv-cortex-cli --bin emotiv-cortex-cli
+          cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui
           --no-default-features
           -- -W clippy::pedantic
 
@@ -145,10 +145,10 @@ jobs:
           --no-default-features --features rustls-tls,config-toml
 
       - name: Check CLI (no default features)
-        run: cargo check -p emotiv-cortex-cli --no-default-features
+        run: cargo check -p emotiv-cortex-tui --no-default-features
 
       - name: Test CLI (no default features)
-        run: cargo test -p emotiv-cortex-cli --no-default-features
+        run: cargo test -p emotiv-cortex-tui --no-default-features
 
   native-tls:
     name: Native TLS (Linux)
@@ -192,12 +192,12 @@ jobs:
             exit 1
           fi
 
-      - name: Verify no ignored rustdoc examples in emotiv-cortex-cli src
+      - name: Verify no ignored rustdoc examples in emotiv-cortex-tui src
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R -n '```ignore' crates/emotiv-cortex-cli/src; then
-            echo "Found rustdoc examples marked as ignore in crates/emotiv-cortex-cli/src."
+          if grep -R -n '```ignore' crates/emotiv-cortex-tui/src; then
+            echo "Found rustdoc examples marked as ignore in crates/emotiv-cortex-tui/src."
             exit 1
           fi
 
@@ -207,9 +207,9 @@ jobs:
           --no-default-features --features rustls-tls,config-toml
           -- -D warnings
 
-      - name: Build emotiv-cortex-cli rustdoc with warnings denied
+      - name: Build emotiv-cortex-tui rustdoc with warnings denied
         run: >
-          cargo rustdoc -p emotiv-cortex-cli
+          cargo rustdoc -p emotiv-cortex-tui
           --no-default-features
           -- -D warnings
 
@@ -222,7 +222,7 @@ jobs:
             echo ""
             echo "- \`emotiv-cortex-v2\` doctests: PASS"
             echo "- \`emotiv-cortex-v2\` rustdoc warnings denied: PASS"
-            echo "- \`emotiv-cortex-cli\` rustdoc warnings denied: PASS"
+            echo "- \`emotiv-cortex-tui\` rustdoc warnings denied: PASS"
             echo "- rustdoc \`ignore\` snippet scan (both crates): PASS"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -235,10 +235,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check CLI (LSL feature)
-        run: cargo check -p emotiv-cortex-cli --no-default-features --features lsl
+        run: cargo check -p emotiv-cortex-tui --no-default-features --features lsl
 
       - name: Test CLI (LSL feature)
-        run: cargo test -p emotiv-cortex-cli --no-default-features --features lsl
+        run: cargo test -p emotiv-cortex-tui --no-default-features --features lsl
 
   package:
     name: Package
@@ -251,5 +251,5 @@ jobs:
       - name: Package emotiv-cortex-v2
         run: cargo package -p emotiv-cortex-v2 --allow-dirty
 
-      - name: Package emotiv-cortex-cli (manifest/list check)
-        run: cargo package -p emotiv-cortex-cli --allow-dirty --list
+      - name: Package emotiv-cortex-tui (manifest/list check)
+        run: cargo package -p emotiv-cortex-tui --allow-dirty --list

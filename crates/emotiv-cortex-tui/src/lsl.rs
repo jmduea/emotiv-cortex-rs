@@ -1,4 +1,4 @@
-//! LSL forwarding for `emotiv-cortex-cli`.
+//! LSL forwarding for `emotiv-cortex-tui`.
 //!
 //! This module bridges typed Cortex streams to liblsl outlets and publishes
 //! structured metadata so generic LSL consumers can understand stream shape
@@ -290,7 +290,7 @@ fn outlet_meta(stream: LslStream, model: &HeadsetModel) -> OutletMeta {
         LslStream::Motion => OutletMeta {
             name: "EmotivMotion",
             stream_type: "MoCap",
-            srate: 0.0,
+            srate: 64.0,
             channels: vec![
                 simple_channel("acc_x", "g", "Misc"),
                 simple_channel("acc_y", "g", "Misc"),
@@ -438,7 +438,7 @@ fn build_stream_info(
     let _ = acquisition;
 
     let mut source = desc.append_child("source");
-    source = source.append_child_value("application", "emotiv-cortex-cli");
+    source = source.append_child_value("application", "emotiv-cortex-tui");
     source = source.append_child_value("library", "emotiv-cortex-v2");
     source = source.append_child_value("version", env!("CARGO_PKG_VERSION"));
     let _ = source;
@@ -599,54 +599,12 @@ impl std::fmt::Debug for LslStreamingHandle {
 }
 
 impl LslStreamingHandle {
-    /// Format a compact status string for display in the CLI status bar.
+    /// Format a compact status string for display in the status bar.
     ///
     /// Example: `LSL ▶ EEG, Motion`
     pub fn format_status(&self) -> String {
         let streams: Vec<&str> = self.subscribed.iter().map(|s| s.label()).collect();
-
         format!("LSL ▶ {}", streams.join(", "))
-    }
-
-    /// Format detailed per-stream statistics for the "View stats" sub-menu.
-    ///
-    /// Includes the outlet schema summary for each active stream.
-    pub fn format_detailed_stats(&self) -> String {
-        let elapsed = self.started_at.elapsed();
-        let time_str = format_duration(elapsed);
-        let mut out = format!("LSL Status: Streaming for {time_str}\n");
-        for (i, (name, count)) in self.sample_counts.iter().enumerate() {
-            let n = count.load(Ordering::Relaxed);
-            let outlet_name = self
-                .active_streams
-                .get(i)
-                .map(|s| s.as_str())
-                .unwrap_or("?");
-            out.push_str(&format!(
-                "  {name}: {n:>12} samples  (outlet: {outlet_name})\n",
-            ));
-        }
-        out
-    }
-
-    /// Returns the list of currently subscribed Cortex stream types.
-    pub fn subscribed_streams(&self) -> Vec<LslStream> {
-        self.subscribed.clone()
-    }
-}
-
-/// Format a duration into a human-readable string like "5m 23s" or "1h 2m 34s".
-fn format_duration(d: Duration) -> String {
-    let secs = d.as_secs();
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
-    let s = secs % 60;
-    if h > 0 {
-        format!("{}h {}m {}s", h, m, s)
-    } else if m > 0 {
-        format!("{}m {}s", m, s)
-    } else {
-        format!("{}s", s)
     }
 }
 
@@ -1193,7 +1151,7 @@ mod tests {
         );
         assert_eq!(
             format_outlet_summary(&mot_meta),
-            "EmotivMotion [type=MoCap, ch=10, srate=0Hz]"
+            "EmotivMotion [type=MoCap, ch=10, srate=64Hz]"
         );
     }
 }

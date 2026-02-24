@@ -1,9 +1,12 @@
-# emotiv-cortex-cli
+# emotiv-cortex-tui
 
 Terminal UI dashboard for the Emotiv Cortex v2 API.
 
 [![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
-[Coverage Reports](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+
+**Pre-release.** This crate is under active development; behavior and features may change. Treat as pre-release when using it.
+
+**Not affiliated with Emotiv.** This crate is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. For official support and products, see [emotiv.com](https://www.emotiv.com/).
 
 A full-screen ratatui TUI that auto-connects to the first available EMOTIV
 headset and displays real-time data:
@@ -22,17 +25,17 @@ headset and displays real-time data:
 Install from crates.io:
 
 ```bash
-cargo install emotiv-cortex-cli
+cargo install emotiv-cortex-tui
 ```
 
 Install from this repository checkout:
 
 ```bash
 # bash / macOS / WSL
-./scripts/install-emotiv-cortex-cli.sh
+./scripts/install-emotiv-cortex-tui.sh
 
 # PowerShell (Windows)
-.\scripts\install-emotiv-cortex-cli.ps1
+.\scripts\install-emotiv-cortex-tui.ps1
 ```
 
 ## Optional LSL Support
@@ -41,13 +44,13 @@ LSL is disabled by default. Install with LSL support:
 
 ```bash
 # cargo directly
-cargo install emotiv-cortex-cli --features lsl
+cargo install emotiv-cortex-tui --features lsl
 
-# bash / macOS / WSL
-./scripts/install-emotiv-cortex-cli.sh --lsl
+# bash / macOS 
+./scripts/install-emotiv-cortex-tui.sh --lsl
 
 # PowerShell (Windows)
-.\scripts\install-emotiv-cortex-cli.ps1 -Lsl
+.\scripts\install-emotiv-cortex-tui.ps1 -Lsl
 ```
 
 LSL support is currently available on Windows and macOS.
@@ -100,8 +103,8 @@ Channel `type` naming follows XDF conventions where defined:
 ## Usage
 
 ```bash
-emotiv-cortex-cli --help
-emotiv-cortex-cli --verbose
+emotiv-cortex-tui --help
+emotiv-cortex-tui --verbose
 ```
 
 You can provide credentials through:

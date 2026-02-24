@@ -25,9 +25,9 @@ repos:
         stages: [pre-commit]
 
       - id: clippy-cli-strict
-        name: clippy strict (emotiv-cortex-cli)
+        name: clippy strict (emotiv-cortex-tui)
         entry: >
-          cargo clippy -p emotiv-cortex-cli --bin emotiv-cortex-cli
+          cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui
           --no-default-features
           -- -D clippy::unwrap_used -D clippy::expect_used
           -D clippy::panic -D clippy::todo -D clippy::unimplemented
@@ -64,9 +64,9 @@ repos:
         stages: [pre-push]
 
       - id: rustdoc-cli-deny-warnings
-        name: rustdoc warnings denied (emotiv-cortex-cli)
+        name: rustdoc warnings denied (emotiv-cortex-tui)
         entry: >
-          cargo rustdoc -p emotiv-cortex-cli
+          cargo rustdoc -p emotiv-cortex-tui
           --no-default-features
           -- -D warnings
         language: system

@@ -244,6 +244,16 @@ impl Default for HealthConfig {
 
 impl CortexConfig {
     /// Create a config with just client credentials (all other fields use defaults).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::CortexConfig;
+    ///
+    /// let config = CortexConfig::new("my-client-id", "my-client-secret");
+    /// assert_eq!(config.cortex_url, "wss://localhost:6868");
+    /// assert!(config.decontaminated);
+    /// ```
     pub fn new(client_id: impl Into<String>, client_secret: impl Into<String>) -> Self {
         Self {
             client_id: client_id.into(),
@@ -369,6 +379,19 @@ impl CortexConfig {
     /// Insecure TLS is always allowed for `localhost` and `127.0.0.1`
     /// (the Cortex service uses a self-signed cert). For other hosts,
     /// `allow_insecure_tls` must be explicitly set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use emotiv_cortex_v2::CortexConfig;
+    ///
+    /// let config = CortexConfig::new("id", "secret");
+    /// assert!(config.should_accept_invalid_certs()); // localhost
+    ///
+    /// let mut remote = CortexConfig::new("id", "secret");
+    /// remote.cortex_url = "wss://remote.example.com:6868".into();
+    /// assert!(!remote.should_accept_invalid_certs());
+    /// ```
     #[must_use]
     pub fn should_accept_invalid_certs(&self) -> bool {
         if is_localhost(&self.cortex_url) {
