@@ -8,7 +8,7 @@ Provides a complete, typed interface to the Emotiv Cortex service for interactin
 
 ## Features
 
-- (close to) Full Cortex v2 API coverage (authentication, headsets, sessions, all 9 data streams, records, markers, profiles, BCI training)
+- Evidence-backed endpoint parity tracking in `docs/api-parity.md`, with `match` rows limited to deterministic contract or workflow coverage
 - Two-layer client: raw `CortexClient` for full control, `ResilientClient` for use with auto-reconnect, token refresh, and retry
 - Typed data streams (EEG, motion, band power, performance metrics, mental commands, facial expressions, device quality)
 - Feature-selectable TLS backend (`rustls-tls` default, `native-tls` opt-in)
@@ -16,25 +16,21 @@ Provides a complete, typed interface to the Emotiv Cortex service for interactin
 
 ## Feature Flags
 
-
 | Feature       | Default | Description                                                          |
 | ------------- | ------- | -------------------------------------------------------------------- |
 | `rustls-tls`  | yes     | Use rustls TLS backend (`tokio-tungstenite/rustls-tls-webpki-roots`) |
 | `native-tls`  | no      | Use native TLS backend (`tokio-tungstenite/native-tls`)              |
 | `config-toml` | yes     | Enable TOML parsing for `CortexConfig::from_file`/`discover`         |
 
-
 Exactly one TLS backend feature must be enabled (`rustls-tls` or `native-tls`).
 If `config-toml` is disabled, `CortexConfig::from_file` and file-based `discover` return a `ConfigError` explaining how to re-enable TOML parsing.
 
 ## Which client should I use?
 
-
 | Layer      | Type              | Token mgmt | Reconnect | Best for                                |
 | ---------- | ----------------- | ---------- | --------- | --------------------------------------- |
 | Low-level  | `CortexClient`    | Manual     | No        | tooling, tests, direct protocol control |
 | High-level | `ResilientClient` | Automatic  | Yes       | ease of use                             |
-
 
 ## Prerequisites
 
@@ -45,7 +41,7 @@ If `config-toml` is disabled, `CortexConfig::from_file` and file-based `discover
 
 ```toml
 [dependencies]
-emotiv-cortex-v2 = "0.3"
+emotiv-cortex-v2 = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -53,7 +49,7 @@ Use native TLS instead of rustls:
 
 ```toml
 [dependencies]
-emotiv-cortex-v2 = { version = "0.3", default-features = false, features = ["native-tls", "config-toml"] }
+emotiv-cortex-v2 = { version = "0.4", default-features = false, features = ["native-tls", "config-toml"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ```
 
@@ -101,7 +97,7 @@ client_secret = "your-client-secret"
 See the `[examples/](examples/)` directory for complete working examples covering all API areas.
 
 For endpoint-by-endpoint compatibility tracking against the official API reference,
-see `[docs/api-parity.md](docs/api-parity.md)`.
+see `[docs/api-parity.md](docs/api-parity.md)`. That matrix only marks `match` where deterministic mock contract tests or documented workflow tests exist, and it calls out any remaining documentation ambiguity explicitly.
 
 ## Testing
 

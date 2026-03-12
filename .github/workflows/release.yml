@@ -9,31 +9,48 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  publish:
-    name: Publish to crates.io
+  validate-release-contract:
+    name: Validate release contract
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
 
-      - name: Validate tag and crate version (v2 only; TUI not published to crates.io)
+      - name: Validate tag, crate versions, and TUI exact pin
         shell: bash
         run: |
           set -euo pipefail
 
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           V2_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-v2/Cargo.toml | head -n1)
+          TUI_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-tui/Cargo.toml | head -n1)
+          TUI_V2_PIN=$(sed -n 's/^emotiv-cortex-v2 = { version = "=\([^"]*\)".*$/\1/p' crates/emotiv-cortex-tui/Cargo.toml | head -n1)
 
-          if [[ -z "$V2_VERSION" ]]; then
-            echo "Could not parse emotiv-cortex-v2 version."
+          if [[ -z "$TAG_VERSION" || -z "$V2_VERSION" || -z "$TUI_VERSION" || -z "$TUI_V2_PIN" ]]; then
+            echo "Failed to parse the full release contract."
+            echo "tag=$TAG_VERSION"
+            echo "emotiv-cortex-v2 version=$V2_VERSION"
+            echo "emotiv-cortex-tui version=$TUI_VERSION"
+            echo "emotiv-cortex-tui -> emotiv-cortex-v2 exact pin=$TUI_V2_PIN"
             exit 1
           fi
 
-          if [[ "$TAG_VERSION" != "$V2_VERSION" ]]; then
-            echo "Tag version ($TAG_VERSION) must match emotiv-cortex-v2 version ($V2_VERSION)."
+          if [[ "$TAG_VERSION" != "$V2_VERSION" || "$TAG_VERSION" != "$TUI_VERSION" || "$TAG_VERSION" != "$TUI_V2_PIN" ]]; then
+            echo "Release contract mismatch detected."
+            echo "tag=$TAG_VERSION"
+            echo "emotiv-cortex-v2 version=$V2_VERSION"
+            echo "emotiv-cortex-tui version=$TUI_VERSION"
+            echo "emotiv-cortex-tui -> emotiv-cortex-v2 exact pin=$TUI_V2_PIN"
             exit 1
           fi
+
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: validate-release-contract
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
       - name: Publish emotiv-cortex-v2
         run: cargo publish -p emotiv-cortex-v2
@@ -45,6 +62,7 @@ jobs:
   build-windows:
     name: Build Windows binaries
     runs-on: windows-latest
+    needs: validate-release-contract
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

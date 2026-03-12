@@ -19,14 +19,15 @@ A full-screen ratatui TUI for visualizing device info/streams/etc:
 
 ## Install
 
+`emotiv-cortex-tui` is versioned in lockstep with `emotiv-cortex-v2`, but it is not published to crates.io. Install the Windows release binaries from GitHub Releases, or build from source on other platforms.
+
 **Windows:** Download the binary from [GitHub Releases](https://github.com/jmduea/emotiv-cortex-rs/releases):
 
 - Baseline (no LSL)
-  - `emotiv-cortex-tui-x86_64-pc-windows-msvc.exe` 
+  - `emotiv-cortex-tui-x86_64-pc-windows-msvc.exe`
 
 - [Lab Streaming Layer](https://github.com/sccn/labstreaminglayer) support for streaming to other apps
   - `emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe`
- 
 
 **From source** (any platform):
 
@@ -45,6 +46,7 @@ Clone this repo then:
 ./scripts/install-emotiv-cortex-tui.sh --lsl   # bash / macOS
 .\scripts\install-emotiv-cortex-tui.ps1 -Lsl   # PowerShell (Windows)
 ```
+
 Or run with Cargo:
 
 ```bash
@@ -74,7 +76,7 @@ Get credentials from the [Emotiv Developer Portal](https://www.emotiv.com/develo
 
 ## LSL Metadata Schema
 
-When streaming to LSL, the CLI publishes self-documenting stream metadata so
+When streaming to LSL, the TUI publishes self-documenting stream metadata so
 receivers can parse stream structure without Cortex API-specific knowledge.
 
 Each outlet includes channel metadata at:

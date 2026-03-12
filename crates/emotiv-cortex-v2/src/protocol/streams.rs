@@ -217,30 +217,48 @@ impl MotionData {
     /// `[COUNTER, INTERPOLATED, Q0, Q1, Q2, Q3, ACCX, ACCY, ACCZ, MAGX, MAGY, MAGZ]`
     #[must_use]
     pub fn from_mot_array(mot: &[f64], timestamp: f64) -> Option<Self> {
-        if mot.len() < 12 {
-            return None;
+        let timestamp = seconds_to_micros_i64(timestamp)?;
+
+        if mot.len() >= 12 {
+            return Some(Self {
+                timestamp,
+                quaternion: Some([
+                    f64_to_f32(mot[2])?,
+                    f64_to_f32(mot[3])?,
+                    f64_to_f32(mot[4])?,
+                    f64_to_f32(mot[5])?,
+                ]),
+                accelerometer: [
+                    f64_to_f32(mot[6])?,
+                    f64_to_f32(mot[7])?,
+                    f64_to_f32(mot[8])?,
+                ],
+                magnetometer: [
+                    f64_to_f32(mot[9])?,
+                    f64_to_f32(mot[10])?,
+                    f64_to_f32(mot[11])?,
+                ],
+            });
         }
 
-        // Skip COUNTER (0) and INTERPOLATED (1), then Q0-Q3, then ACC, then MAG
-        Some(Self {
-            timestamp: seconds_to_micros_i64(timestamp)?,
-            quaternion: Some([
-                f64_to_f32(mot[2])?,
-                f64_to_f32(mot[3])?,
-                f64_to_f32(mot[4])?,
-                f64_to_f32(mot[5])?,
-            ]),
-            accelerometer: [
-                f64_to_f32(mot[6])?,
-                f64_to_f32(mot[7])?,
-                f64_to_f32(mot[8])?,
-            ],
-            magnetometer: [
-                f64_to_f32(mot[9])?,
-                f64_to_f32(mot[10])?,
-                f64_to_f32(mot[11])?,
-            ],
-        })
+        if mot.len() >= 11 {
+            return Some(Self {
+                timestamp,
+                quaternion: None,
+                accelerometer: [
+                    f64_to_f32(mot[5])?,
+                    f64_to_f32(mot[6])?,
+                    f64_to_f32(mot[7])?,
+                ],
+                magnetometer: [
+                    f64_to_f32(mot[8])?,
+                    f64_to_f32(mot[9])?,
+                    f64_to_f32(mot[10])?,
+                ],
+            });
+        }
+
+        None
     }
 }
 

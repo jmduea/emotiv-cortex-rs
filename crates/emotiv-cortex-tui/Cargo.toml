@@ -1,13 +1,13 @@
 [package]
 name = "emotiv-cortex-tui"
-version = "0.3.4"
+version = "0.4.0"
+publish = false
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Terminal UI dashboard for the Emotiv Cortex v2 API"
 repository = "https://github.com/jmduea/emotiv-cortex-rs"
 homepage = "https://github.com/jmduea/emotiv-cortex-rs"
-documentation = "https://docs.rs/emotiv-cortex-tui"
 readme = "README.md"
 exclude = ["tests/", ".github/"]
 keywords = ["emotiv", "cortex", "eeg", "tui", "bci"]
@@ -15,10 +15,6 @@ categories = ["command-line-utilities", "science"]
 
 [lints]
 workspace = true
-
-[profile.release]
-# Smaller binaries for release (strips symbols; often saves ~30–50%)
-strip = true
 
 [[bin]]
 name = "emotiv-cortex-tui"
@@ -30,7 +26,7 @@ lsl = ["dep:lsl", "dep:libc"]
 
 [dependencies]
 
-emotiv-cortex-v2 = { version = "=0.3.4", path = "../emotiv-cortex-v2", default-features = false, features = [
+emotiv-cortex-v2 = { version = "=0.4.0", path = "../emotiv-cortex-v2", default-features = false, features = [
     "rustls-tls",
     "config-toml",
 ] }

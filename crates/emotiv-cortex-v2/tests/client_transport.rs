@@ -317,6 +317,631 @@ async fn subscribe_eeg_routes_stream_event_to_typed_stream() {
 }
 
 #[tokio::test]
+async fn subscribe_motion_accepts_documented_legacy_motion_payload() {
+    let mut server =
+        match start_server_or_skip("subscribe_motion_accepts_documented_legacy_motion_payload")
+            .await
+        {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&request),
+                json!({
+                    "success": [{
+                        "cols": [
+                            "COUNTER_MEMS",
+                            "INTERPOLATED_MEMS",
+                            "GYROX",
+                            "GYROY",
+                            "GYROZ",
+                            "ACCX",
+                            "ACCY",
+                            "ACCZ",
+                            "MAGX",
+                            "MAGY",
+                            "MAGZ"
+                        ],
+                        "sid": "session-1",
+                        "streamName": Streams::MOT
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "mot": [
+                    14,
+                    0,
+                    8206,
+                    8187,
+                    8181,
+                    4235,
+                    8668,
+                    8128,
+                    8294,
+                    8237,
+                    7938
+                ],
+                "sid": "session-1",
+                "time": 1559902927.7428
+            }))
+            .await;
+    });
+
+    let mut motion_stream = streams::subscribe_motion(&client, "token", "session-1")
+        .await
+        .unwrap();
+    let motion = tokio::time::timeout(std::time::Duration::from_secs(2), motion_stream.next())
+        .await
+        .expect("timed out waiting for motion sample")
+        .expect("typed stream ended unexpectedly");
+
+    responder.await.unwrap();
+
+    assert!(motion.quaternion.is_none());
+    assert_eq!(motion.accelerometer, [4235.0, 8668.0, 8128.0]);
+    assert_eq!(motion.magnetometer, [8294.0, 8237.0, 7938.0]);
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_metrics_maps_documented_mn8_labels() {
+    let mut server =
+        match start_server_or_skip("subscribe_metrics_maps_documented_mn8_labels").await {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&request),
+                json!({
+                    "success": [{
+                        "cols": [
+                            "attention.isActive",
+                            "attention",
+                            "cognitiveStress.isActive",
+                            "cognitiveStress"
+                        ],
+                        "sid": "session-1",
+                        "streamName": Streams::MET
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "met": [true, 0.8, true, 0.4],
+                "sid": "session-1",
+                "time": 1759225262.5052
+            }))
+            .await;
+    });
+
+    let mut metrics_stream = streams::subscribe_metrics(&client, "token", "session-1")
+        .await
+        .unwrap();
+    let metrics = tokio::time::timeout(std::time::Duration::from_secs(2), metrics_stream.next())
+        .await
+        .expect("timed out waiting for metrics sample")
+        .expect("typed stream ended unexpectedly");
+
+    responder.await.unwrap();
+
+    assert_eq!(metrics.attention, Some(0.8));
+    assert_eq!(metrics.stress, Some(0.4));
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_mental_commands_routes_documented_payload_to_typed_stream() {
+    let mut server = match start_server_or_skip(
+        "subscribe_mental_commands_routes_documented_payload_to_typed_stream",
+    )
+    .await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&request),
+                json!({
+                    "success": [{
+                        "cols": ["act", "pow"],
+                        "sid": "session-1",
+                        "streamName": Streams::COM
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "com": ["pull", 0.564],
+                "sid": "session-1",
+                "time": 1559903099.348
+            }))
+            .await;
+    });
+
+    let mut commands = streams::subscribe_mental_commands(&client, "token", "session-1")
+        .await
+        .unwrap();
+    let command = tokio::time::timeout(std::time::Duration::from_secs(2), commands.next())
+        .await
+        .expect("timed out waiting for mental-command sample")
+        .expect("typed stream ended unexpectedly");
+
+    responder.await.unwrap();
+
+    assert_eq!(command.action, "pull");
+    assert!((command.power - 0.564).abs() < f32::EPSILON);
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_dev_routes_documented_payload_to_typed_stream() {
+    let mut server =
+        match start_server_or_skip("subscribe_dev_routes_documented_payload_to_typed_stream").await
+        {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&request),
+                json!({
+                    "success": [{
+                        "cols": [
+                            "Battery",
+                            "Signal",
+                            ["AF3", "T7", "Pz", "T8", "AF4", "OVERALL"],
+                            "BatteryPercent"
+                        ],
+                        "sid": "session-1",
+                        "streamName": Streams::DEV
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "dev": [3, 1, [4, 1, 1, 2, 4, 25], 74],
+                "sid": "session-1",
+                "time": 1590403053.5002
+            }))
+            .await;
+    });
+
+    let mut device_quality = streams::subscribe_dev(&client, "token", "session-1", 5)
+        .await
+        .unwrap();
+    let sample = tokio::time::timeout(std::time::Duration::from_secs(2), device_quality.next())
+        .await
+        .expect("timed out waiting for device-quality sample")
+        .expect("typed stream ended unexpectedly");
+
+    responder.await.unwrap();
+
+    assert_eq!(sample.battery_level, 3);
+    assert!((sample.signal_strength - 1.0).abs() < f32::EPSILON);
+    assert_eq!(sample.channel_quality.len(), 5);
+    assert!((sample.channel_quality[0] - 1.0).abs() < f32::EPSILON);
+    assert!((sample.channel_quality[1] - 0.25).abs() < f32::EPSILON);
+    assert!((sample.overall_quality - 0.25).abs() < f32::EPSILON);
+    assert_eq!(sample.battery_percent, 74);
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_eq_routes_documented_payload_to_typed_stream() {
+    let mut server = match start_server_or_skip(
+        "subscribe_eq_routes_documented_payload_to_typed_stream",
+    )
+    .await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&request),
+                json!({
+                    "success": [{
+                        "cols": [
+                            "batteryPercent",
+                            "overall",
+                            "sampleRateQuality",
+                            "AF3",
+                            "T7",
+                            "Pz",
+                            "T8",
+                            "AF4"
+                        ],
+                        "sid": "session-1",
+                        "streamName": Streams::EQ
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "eq": [78, 25, 1.0, 4, 1, 1, 2, 4],
+                "sid": "session-1",
+                "time": 1590403053.5002
+            }))
+            .await;
+    });
+
+    let mut eeg_quality = streams::subscribe_eq(&client, "token", "session-1", 5)
+        .await
+        .unwrap();
+    let sample = tokio::time::timeout(std::time::Duration::from_secs(2), eeg_quality.next())
+        .await
+        .expect("timed out waiting for eeg-quality sample")
+        .expect("typed stream ended unexpectedly");
+
+    responder.await.unwrap();
+
+    assert_eq!(sample.battery_percent, 78);
+    assert!((sample.overall - 0.25).abs() < f32::EPSILON);
+    assert!((sample.sample_rate_quality - 1.0).abs() < f32::EPSILON);
+    assert_eq!(sample.sensor_quality.len(), 5);
+    assert!((sample.sensor_quality[0] - 1.0).abs() < f32::EPSILON);
+    assert!((sample.sensor_quality[3] - 0.5).abs() < f32::EPSILON);
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_band_power_routes_documented_payload_to_typed_stream() {
+    let mut server = match start_server_or_skip(
+        "subscribe_band_power_routes_documented_payload_to_typed_stream",
+    )
+    .await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&request),
+                json!({
+                    "success": [{
+                        "cols": [
+                            "AF3/theta", "AF3/alpha", "AF3/betaL", "AF3/betaH", "AF3/gamma",
+                            "T7/theta", "T7/alpha", "T7/betaL", "T7/betaH", "T7/gamma",
+                            "Pz/theta", "Pz/alpha", "Pz/betaL", "Pz/betaH", "Pz/gamma",
+                            "T8/theta", "T8/alpha", "T8/betaL", "T8/betaH", "T8/gamma",
+                            "AF4/theta", "AF4/alpha", "AF4/betaL", "AF4/betaH", "AF4/gamma"
+                        ],
+                        "sid": "session-1",
+                        "streamName": Streams::POW
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "pow": [
+                    1.246, 0.706, 0.566, 1.065, 0.602,
+                    10.293, 4.374, 11.638, 351.767, 40.273,
+                    50.159, 4.585, 0.467, 1.481, 3.764,
+                    9.861, 3.139, 2.094, 3.342, 4.452,
+                    75.652, 1.972, 2.932, 2.555, 7.005
+                ],
+                "sid": "session-1",
+                "time": 1590403491.0307
+            }))
+            .await;
+    });
+
+    let mut band_power = streams::subscribe_band_power(&client, "token", "session-1", 5)
+        .await
+        .unwrap();
+    let sample = tokio::time::timeout(std::time::Duration::from_secs(2), band_power.next())
+        .await
+        .expect("timed out waiting for band-power sample")
+        .expect("typed stream ended unexpectedly");
+
+    responder.await.unwrap();
+
+    assert_eq!(sample.channel_powers.len(), 5);
+    assert!((sample.channel_powers[0][0] - 1.246).abs() < f32::EPSILON);
+    assert!((sample.channel_powers[1][3] - 351.767).abs() < f32::EPSILON);
+    assert!((sample.channel_powers[4][4] - 7.005).abs() < f32::EPSILON);
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_facial_expressions_routes_documented_payload_to_typed_stream() {
+    let mut server = match start_server_or_skip(
+        "subscribe_facial_expressions_routes_documented_payload_to_typed_stream",
+    )
+    .await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&request),
+                json!({
+                    "success": [{
+                        "cols": ["eyeAct", "uAct", "uPow", "lAct", "lPow"],
+                        "sid": "session-1",
+                        "streamName": Streams::FAC
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "fac": ["neutral", "neutral", 0, "clench", 0.0576],
+                "sid": "session-1",
+                "time": 1559903035.2961
+            }))
+            .await;
+    });
+
+    let mut facial = streams::subscribe_facial_expressions(&client, "token", "session-1")
+        .await
+        .unwrap();
+    let sample = tokio::time::timeout(std::time::Duration::from_secs(2), facial.next())
+        .await
+        .expect("timed out waiting for facial-expression sample")
+        .expect("typed stream ended unexpectedly");
+
+    responder.await.unwrap();
+
+    assert_eq!(sample.eye_action, "neutral");
+    assert_eq!(sample.upper_face_action, "neutral");
+    assert!((sample.upper_face_power - 0.0).abs() < f32::EPSILON);
+    assert_eq!(sample.lower_face_action, "clench");
+    assert!((sample.lower_face_power - 0.0576).abs() < f32::EPSILON);
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn subscribe_sys_routes_documented_payload_to_typed_stream() {
+    let mut server =
+        match start_server_or_skip("subscribe_sys_routes_documented_payload_to_typed_stream").await
+        {
+            Some(server) => server,
+            None => return,
+        };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let request = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&request),
+                json!({
+                    "success": [{
+                        "cols": ["event", "msg"],
+                        "sid": "session-1",
+                        "streamName": Streams::SYS
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "sid": "session-1",
+                "sys": ["mentalCommand", "MC_Started"],
+                "time": 1559903035.2961
+            }))
+            .await;
+    });
+
+    let mut sys_events = streams::subscribe_sys(&client, "token", "session-1")
+        .await
+        .unwrap();
+    let sample = tokio::time::timeout(std::time::Duration::from_secs(2), sys_events.next())
+        .await
+        .expect("timed out waiting for system-event sample")
+        .expect("typed stream ended unexpectedly");
+
+    responder.await.unwrap();
+
+    assert_eq!(sample.sid, "session-1");
+    assert_eq!(sample.sys.len(), 2);
+    assert_eq!(sample.sys[0].as_str(), Some("mentalCommand"));
+    assert_eq!(sample.sys[1].as_str(), Some("MC_Started"));
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn unsubscribe_closes_motion_stream_after_channel_cleanup() {
+    let mut server = match start_server_or_skip(
+        "unsubscribe_closes_motion_stream_after_channel_cleanup",
+    )
+    .await
+    {
+        Some(server) => server,
+        None => return,
+    };
+    let config = test_config(server.ws_url());
+    let mut client = CortexClient::connect(&config).await.unwrap();
+    let (post_unsubscribe_tx, post_unsubscribe_rx) = tokio::sync::oneshot::channel();
+
+    let mut connection = server.accept_connection().await;
+    let responder = tokio::spawn(async move {
+        let subscribe = connection.recv_request_method(Methods::SUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&subscribe),
+                json!({
+                    "success": [{
+                        "cols": [
+                            "COUNTER_MEMS",
+                            "INTERPOLATED_MEMS",
+                            "Q0",
+                            "Q1",
+                            "Q2",
+                            "Q3",
+                            "ACCX",
+                            "ACCY",
+                            "ACCZ",
+                            "MAGX",
+                            "MAGY",
+                            "MAGZ"
+                        ],
+                        "sid": "session-1",
+                        "streamName": Streams::MOT
+                    }],
+                    "failure": []
+                }),
+            )
+            .await;
+        connection
+            .push_event(json!({
+                "mot": [
+                    48,
+                    0,
+                    0.735341,
+                    0.255615,
+                    0.627441,
+                    -0.015869,
+                    0.948257,
+                    -0.354986,
+                    -0.083497,
+                    -44.656766,
+                    -86.970985,
+                    23.221568
+                ],
+                "sid": "session-1",
+                "time": 1590402244.8242
+            }))
+            .await;
+
+        let unsubscribe = connection.recv_request_method(Methods::UNSUBSCRIBE).await;
+        connection
+            .send_result(
+                rpc_id(&unsubscribe),
+                json!({
+                    "success": [Streams::MOT],
+                    "failure": []
+                }),
+            )
+            .await;
+
+        post_unsubscribe_rx
+            .await
+            .expect("post-unsubscribe signal dropped unexpectedly");
+
+        connection
+            .push_event(json!({
+                "mot": [
+                    49,
+                    0,
+                    0.735341,
+                    0.255615,
+                    0.627441,
+                    -0.015869,
+                    0.948257,
+                    -0.354986,
+                    -0.083497,
+                    -44.656766,
+                    -86.970985,
+                    23.221568
+                ],
+                "sid": "session-1",
+                "time": 1590402245.8242
+            }))
+            .await;
+    });
+
+    let mut motion_stream = streams::subscribe_motion(&client, "token", "session-1")
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(std::time::Duration::from_secs(2), motion_stream.next())
+        .await
+        .expect("timed out waiting for first motion sample")
+        .expect("typed stream ended unexpectedly before unsubscribe");
+    assert!(first.quaternion.is_some());
+
+    streams::unsubscribe(&client, "token", "session-1", &[Streams::MOT])
+        .await
+        .unwrap();
+    let _ = post_unsubscribe_tx.send(());
+
+    let next = tokio::time::timeout(std::time::Duration::from_secs(2), motion_stream.next())
+        .await
+        .expect("timed out waiting for stream shutdown");
+
+    responder.await.unwrap();
+
+    assert!(
+        next.is_none(),
+        "motion stream should close after unsubscribe"
+    );
+
+    client.disconnect().await.unwrap();
+}
+
+#[tokio::test]
 async fn api_error_code_maps_to_domain_error() {
     let mut server = match start_server_or_skip("api_error_code_maps_to_domain_error").await {
         Some(server) => server,

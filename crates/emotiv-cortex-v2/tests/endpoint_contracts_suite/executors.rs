@@ -1,3 +1,4 @@
+use emotiv_cortex_v2::protocol::headset::{ConfigMappingRequest, ConfigMappingResponse};
 use emotiv_cortex_v2::protocol::profiles::ProfileAction;
 use emotiv_cortex_v2::protocol::records::{ExportFormat, UpdateRecordRequest};
 use emotiv_cortex_v2::protocol::subjects::{QuerySubjectsRequest, SubjectRequest};
@@ -8,13 +9,232 @@ use emotiv_cortex_v2::protocol::training::{
 use emotiv_cortex_v2::{CortexClient, ResilientClient};
 
 use super::fixtures::{
-    FACIAL_ACTION, HEADSET_ID, PROFILE_NAME, RECORD_ID, SESSION_ID, SUBJECT_NAME, StepKind,
-    TOKEN_CORTEX, record_ids, record_tags, subject_attributes, subject_names, subject_order,
-    subject_query,
+    CLIENT_ID, CLIENT_SECRET, CONTRACT_STREAMS, CUSTOM_HEADSET_NAME, FACIAL_ACTION,
+    HEADBAND_POSITION, HEADSET_ID, MAPPING_UUID, MARKER_ID, MARKER_LABEL, PROFILE_NAME, RECORD_ID,
+    SESSION_ID, SUBJECT_NAME, StepKind, TOKEN_CORTEX, config_mapping_create_mappings,
+    config_mapping_updated_mappings, record_ids, record_tags, subject_attributes, subject_names,
+    subject_order, subject_query,
 };
 
 pub(super) async fn execute_cortex_step(client: &CortexClient, kind: &StepKind) {
     match kind {
+        StepKind::HasAccessRight => {
+            let granted = client
+                .has_access_right(CLIENT_ID, CLIENT_SECRET)
+                .await
+                .unwrap();
+            assert!(granted);
+        }
+        StepKind::GetUserLogin => {
+            let users = client.get_user_login().await.unwrap();
+            assert_eq!(users.len(), 1);
+            assert_eq!(users[0].username, "contract-user");
+            assert_eq!(users[0].logged_in_os_uid.as_deref(), Some("launcher"));
+        }
+        StepKind::GetUserInfo => {
+            let result = client.get_user_info(TOKEN_CORTEX).await.unwrap();
+            assert_eq!(result["username"], "contract-user");
+            assert_eq!(result["firstName"], "Contract");
+        }
+        StepKind::GetLicenseInfo => {
+            let result = client.get_license_info(TOKEN_CORTEX).await.unwrap();
+            assert_eq!(result["isOnline"], true);
+            assert_eq!(result["license"]["id"], "license-001");
+        }
+        StepKind::ConnectHeadset => {
+            client.connect_headset(HEADSET_ID).await.unwrap();
+        }
+        StepKind::DisconnectHeadset => {
+            client.disconnect_headset(HEADSET_ID).await.unwrap();
+        }
+        StepKind::RefreshHeadsets => {
+            client.refresh_headsets().await.unwrap();
+        }
+        StepKind::ConfigMappingCreate => {
+            let response = client
+                .config_mapping(
+                    TOKEN_CORTEX,
+                    ConfigMappingRequest::Create {
+                        name: "Flex Contract".to_string(),
+                        mappings: config_mapping_create_mappings(),
+                    },
+                )
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::Value { message, value } => {
+                    assert_eq!(message, "Create flex mapping config successful");
+                    assert_eq!(value.uuid, MAPPING_UUID);
+                }
+                other => panic!("unexpected config mapping create response: {other:?}"),
+            }
+        }
+        StepKind::ConfigMappingGet => {
+            let response = client
+                .config_mapping(TOKEN_CORTEX, ConfigMappingRequest::Get)
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::List { message, value } => {
+                    assert_eq!(message, "Get flex mapping config successful");
+                    assert_eq!(value.config.len(), 1);
+                    assert_eq!(value.config[0].uuid, MAPPING_UUID);
+                }
+                other => panic!("unexpected config mapping get response: {other:?}"),
+            }
+        }
+        StepKind::ConfigMappingRead => {
+            let response = client
+                .config_mapping(
+                    TOKEN_CORTEX,
+                    ConfigMappingRequest::Read {
+                        uuid: MAPPING_UUID.to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::Value { message, value } => {
+                    assert_eq!(message, "Read flex mapping config successful");
+                    assert_eq!(value.name, "Flex Contract");
+                }
+                other => panic!("unexpected config mapping read response: {other:?}"),
+            }
+        }
+        StepKind::ConfigMappingUpdate => {
+            let response = client
+                .config_mapping(
+                    TOKEN_CORTEX,
+                    ConfigMappingRequest::Update {
+                        uuid: MAPPING_UUID.to_string(),
+                        name: Some("Flex Contract Updated".to_string()),
+                        mappings: Some(config_mapping_updated_mappings()),
+                    },
+                )
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::Value { message, value } => {
+                    assert_eq!(message, "Update flex mapping config successful");
+                    assert_eq!(value.name, "Flex Contract Updated");
+                }
+                other => panic!("unexpected config mapping update response: {other:?}"),
+            }
+        }
+        StepKind::ConfigMappingDelete => {
+            let response = client
+                .config_mapping(
+                    TOKEN_CORTEX,
+                    ConfigMappingRequest::Delete {
+                        uuid: MAPPING_UUID.to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::Deleted { message, uuid } => {
+                    assert_eq!(message, "Delete flex mapping config successful");
+                    assert_eq!(uuid, MAPPING_UUID);
+                }
+                other => panic!("unexpected config mapping delete response: {other:?}"),
+            }
+        }
+        StepKind::UpdateHeadset => {
+            let result = client
+                .update_headset(
+                    TOKEN_CORTEX,
+                    HEADSET_ID,
+                    serde_json::json!({
+                        "mode": "EPOCPLUS",
+                        "eegRate": 256,
+                        "memsRate": 64
+                    }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result["headsetId"], HEADSET_ID);
+        }
+        StepKind::UpdateHeadsetCustomInfo => {
+            let result = client
+                .update_headset_custom_info(
+                    TOKEN_CORTEX,
+                    HEADSET_ID,
+                    Some(HEADBAND_POSITION),
+                    Some(CUSTOM_HEADSET_NAME),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result["customName"], CUSTOM_HEADSET_NAME);
+        }
+        StepKind::SyncWithHeadsetClock => {
+            let result = client.sync_with_headset_clock(HEADSET_ID).await.unwrap();
+            assert_eq!(result.headset, HEADSET_ID);
+            assert!((result.adjustment - 0.0123).abs() < f64::EPSILON);
+        }
+        StepKind::CreateSession => {
+            let session = client
+                .create_session(TOKEN_CORTEX, HEADSET_ID)
+                .await
+                .unwrap();
+            assert_eq!(session.id, SESSION_ID);
+            assert_eq!(session.status, "activated");
+        }
+        StepKind::CloseSession => {
+            client
+                .close_session(TOKEN_CORTEX, SESSION_ID)
+                .await
+                .unwrap();
+        }
+        StepKind::QuerySessions => {
+            let sessions = client.query_sessions(TOKEN_CORTEX).await.unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].id, SESSION_ID);
+            assert_eq!(
+                sessions[0]
+                    .headset
+                    .as_ref()
+                    .map(|headset| headset.id.as_str()),
+                Some(HEADSET_ID)
+            );
+        }
+        StepKind::SubscribeStreams => {
+            let result = client
+                .subscribe_streams(TOKEN_CORTEX, SESSION_ID, &CONTRACT_STREAMS)
+                .await
+                .unwrap();
+            assert_eq!(result["success"].as_array().map(Vec::len), Some(3));
+            assert_eq!(result["failure"].as_array().map(Vec::len), Some(0));
+        }
+        StepKind::UnsubscribeStreams => {
+            client
+                .unsubscribe_streams(TOKEN_CORTEX, SESSION_ID, &CONTRACT_STREAMS)
+                .await
+                .unwrap();
+        }
+        StepKind::InjectMarker => {
+            let marker = client
+                .inject_marker(
+                    TOKEN_CORTEX,
+                    SESSION_ID,
+                    MARKER_LABEL,
+                    42,
+                    "python-app",
+                    Some(12345.0),
+                )
+                .await
+                .unwrap();
+            assert_eq!(marker.uuid, MARKER_ID);
+            assert_eq!(
+                marker.start_datetime.as_deref(),
+                Some("2026-02-12T09:01:00Z")
+            );
+        }
+        StepKind::UpdateMarker => {
+            client
+                .update_marker(TOKEN_CORTEX, SESSION_ID, MARKER_ID, Some(12346.0))
+                .await
+                .unwrap();
+        }
         StepKind::CreateRecord => {
             let record = client
                 .create_record(TOKEN_CORTEX, SESSION_ID, "Contract Record")
@@ -304,6 +524,191 @@ pub(super) async fn execute_cortex_step(client: &CortexClient, kind: &StepKind) 
 
 pub(super) async fn execute_resilient_step(client: &ResilientClient, kind: &StepKind) {
     match kind {
+        StepKind::HasAccessRight => {
+            let granted = client.has_access_right().await.unwrap();
+            assert!(granted);
+        }
+        StepKind::GetUserLogin => {
+            let users = client.get_user_login().await.unwrap();
+            assert_eq!(users.len(), 1);
+            assert_eq!(users[0].username, "contract-user");
+            assert_eq!(users[0].logged_in_os_uid.as_deref(), Some("launcher"));
+        }
+        StepKind::GetUserInfo => {
+            let result = client.get_user_info().await.unwrap();
+            assert_eq!(result["username"], "contract-user");
+            assert_eq!(result["firstName"], "Contract");
+        }
+        StepKind::GetLicenseInfo => {
+            let result = client.get_license_info().await.unwrap();
+            assert_eq!(result["isOnline"], true);
+            assert_eq!(result["license"]["id"], "license-001");
+        }
+        StepKind::ConnectHeadset => {
+            client.connect_headset(HEADSET_ID).await.unwrap();
+        }
+        StepKind::DisconnectHeadset => {
+            client.disconnect_headset(HEADSET_ID).await.unwrap();
+        }
+        StepKind::RefreshHeadsets => {
+            client.refresh_headsets().await.unwrap();
+        }
+        StepKind::ConfigMappingCreate => {
+            let response = client
+                .config_mapping(ConfigMappingRequest::Create {
+                    name: "Flex Contract".to_string(),
+                    mappings: config_mapping_create_mappings(),
+                })
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::Value { message, value } => {
+                    assert_eq!(message, "Create flex mapping config successful");
+                    assert_eq!(value.uuid, MAPPING_UUID);
+                }
+                other => panic!("unexpected config mapping create response: {other:?}"),
+            }
+        }
+        StepKind::ConfigMappingGet => {
+            let response = client
+                .config_mapping(ConfigMappingRequest::Get)
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::List { message, value } => {
+                    assert_eq!(message, "Get flex mapping config successful");
+                    assert_eq!(value.config.len(), 1);
+                    assert_eq!(value.config[0].uuid, MAPPING_UUID);
+                }
+                other => panic!("unexpected config mapping get response: {other:?}"),
+            }
+        }
+        StepKind::ConfigMappingRead => {
+            let response = client
+                .config_mapping(ConfigMappingRequest::Read {
+                    uuid: MAPPING_UUID.to_string(),
+                })
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::Value { message, value } => {
+                    assert_eq!(message, "Read flex mapping config successful");
+                    assert_eq!(value.name, "Flex Contract");
+                }
+                other => panic!("unexpected config mapping read response: {other:?}"),
+            }
+        }
+        StepKind::ConfigMappingUpdate => {
+            let response = client
+                .config_mapping(ConfigMappingRequest::Update {
+                    uuid: MAPPING_UUID.to_string(),
+                    name: Some("Flex Contract Updated".to_string()),
+                    mappings: Some(config_mapping_updated_mappings()),
+                })
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::Value { message, value } => {
+                    assert_eq!(message, "Update flex mapping config successful");
+                    assert_eq!(value.name, "Flex Contract Updated");
+                }
+                other => panic!("unexpected config mapping update response: {other:?}"),
+            }
+        }
+        StepKind::ConfigMappingDelete => {
+            let response = client
+                .config_mapping(ConfigMappingRequest::Delete {
+                    uuid: MAPPING_UUID.to_string(),
+                })
+                .await
+                .unwrap();
+            match response {
+                ConfigMappingResponse::Deleted { message, uuid } => {
+                    assert_eq!(message, "Delete flex mapping config successful");
+                    assert_eq!(uuid, MAPPING_UUID);
+                }
+                other => panic!("unexpected config mapping delete response: {other:?}"),
+            }
+        }
+        StepKind::UpdateHeadset => {
+            let result = client
+                .update_headset(
+                    HEADSET_ID,
+                    serde_json::json!({
+                        "mode": "EPOCPLUS",
+                        "eegRate": 256,
+                        "memsRate": 64
+                    }),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result["headsetId"], HEADSET_ID);
+        }
+        StepKind::UpdateHeadsetCustomInfo => {
+            let result = client
+                .update_headset_custom_info(
+                    HEADSET_ID,
+                    Some(HEADBAND_POSITION),
+                    Some(CUSTOM_HEADSET_NAME),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result["customName"], CUSTOM_HEADSET_NAME);
+        }
+        StepKind::SyncWithHeadsetClock => {
+            let result = client.sync_with_headset_clock(HEADSET_ID).await.unwrap();
+            assert_eq!(result.headset, HEADSET_ID);
+            assert!((result.adjustment - 0.0123).abs() < f64::EPSILON);
+        }
+        StepKind::CreateSession => {
+            let session = client.create_session(HEADSET_ID).await.unwrap();
+            assert_eq!(session.id, SESSION_ID);
+            assert_eq!(session.status, "activated");
+        }
+        StepKind::CloseSession => {
+            client.close_session(SESSION_ID).await.unwrap();
+        }
+        StepKind::QuerySessions => {
+            let sessions = client.query_sessions().await.unwrap();
+            assert_eq!(sessions.len(), 1);
+            assert_eq!(sessions[0].id, SESSION_ID);
+            assert_eq!(
+                sessions[0]
+                    .headset
+                    .as_ref()
+                    .map(|headset| headset.id.as_str()),
+                Some(HEADSET_ID)
+            );
+        }
+        StepKind::SubscribeStreams => {
+            client
+                .subscribe_streams(SESSION_ID, &CONTRACT_STREAMS)
+                .await
+                .unwrap();
+        }
+        StepKind::UnsubscribeStreams => {
+            client
+                .unsubscribe_streams(SESSION_ID, &CONTRACT_STREAMS)
+                .await
+                .unwrap();
+        }
+        StepKind::InjectMarker => {
+            let marker = client
+                .inject_marker(SESSION_ID, MARKER_LABEL, 42, "python-app", Some(12345.0))
+                .await
+                .unwrap();
+            assert_eq!(marker.uuid, MARKER_ID);
+            assert_eq!(
+                marker.start_datetime.as_deref(),
+                Some("2026-02-12T09:01:00Z")
+            );
+        }
+        StepKind::UpdateMarker => {
+            client
+                .update_marker(SESSION_ID, MARKER_ID, Some(12346.0))
+                .await
+                .unwrap();
+        }
         StepKind::CreateRecord => {
             let record = client
                 .create_record(SESSION_ID, "Contract Record")

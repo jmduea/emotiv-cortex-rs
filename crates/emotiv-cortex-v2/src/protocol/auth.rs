@@ -10,6 +10,9 @@ pub struct UserLoginInfo {
     /// User's current login provider.
     #[serde(rename = "currentOSUId")]
     pub current_os_uid: Option<String>,
+    /// OS account that owns the active Cortex login.
+    #[serde(rename = "loggedInOSUId")]
+    pub logged_in_os_uid: Option<String>,
     /// Login time.
     #[serde(rename = "lastLoginTime")]
     pub last_login_time: Option<String>,

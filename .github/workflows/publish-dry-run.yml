@@ -11,8 +11,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  dry-run:
-    name: cargo publish --dry-run
+  v2-dry-run:
+    name: cargo publish --dry-run (emotiv-cortex-v2)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,14 +22,29 @@ jobs:
       - name: Dry run emotiv-cortex-v2
         run: cargo publish --dry-run -p emotiv-cortex-v2
 
-      - name: Dry run emotiv-cortex-tui
-        shell: bash
-        run: |
-          set -euo pipefail
+  tui-binary-preflight:
+    name: TUI binary release preflight
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
-          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-v2/Cargo.toml | head -n1)
-          if cargo search emotiv-cortex-v2 --limit 1 | grep -q "emotiv-cortex-v2 = \"$VERSION\""; then
-            cargo publish --dry-run -p emotiv-cortex-tui
-          else
-            echo "Skipping TUI dry-run: emotiv-cortex-v2 $VERSION is not yet visible on crates.io."
-          fi
+      - name: Build emotiv-cortex-tui (release, no LSL)
+        run: cargo build -p emotiv-cortex-tui --release --no-default-features
+
+      - name: Stash baseline binary
+        run: Copy-Item target/release/emotiv-cortex-tui.exe target/release/emotiv-cortex-tui-nolsl.exe
+
+      - name: Build emotiv-cortex-tui (release, with LSL)
+        run: cargo build -p emotiv-cortex-tui --release --no-default-features --features lsl
+
+      - name: Stage release asset names
+        run: |
+          Copy-Item target/release/emotiv-cortex-tui-nolsl.exe emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
+          Copy-Item target/release/emotiv-cortex-tui.exe emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe
+
+      - name: Verify staged release assets
+        run: |
+          Get-Item emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
+          Get-Item emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe

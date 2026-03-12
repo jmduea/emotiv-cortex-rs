@@ -3,15 +3,21 @@
 Source of truth: <https://emotiv.gitbook.io/cortex-api>  
 Validated against docs snapshot date: **2026-02-12**.
 
+Evidence basis:
+
+- Deterministic endpoint contract coverage in `tests/endpoint_contracts_suite`.
+- Deterministic documented workflow coverage in `tests/example_workflows.rs`.
+
 Status legend:
-- `match`: crate request/response shape and semantics align with docs.
-- `partial`: compatible for common cases, but docs and crate differ in optional fields/modes or need broader validation.
-- `mismatch`: known incompatibility requiring code change before release.
+
+- `match`: deterministic tests cover the documented request shape and the stable response fields used by the crate.
+- `partial`: deterministic tests cover a stable subset, but upstream docs remain ambiguous or broader than what is verified.
+- `mismatch`: deterministic tests prove a docs/implementation incompatibility requiring a code change before release.
 
 | Cortex method | GitBook docs | Crate method(s) | Status | Notes |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `getCortexInfo` | <https://emotiv.gitbook.io/cortex-api/cortex/getcortexinfo> | `CortexClient::get_cortex_info`, `ResilientClient::get_cortex_info` | `match` | Health-check path. |
-| `getUserLogin` | <https://emotiv.gitbook.io/cortex-api/authentication/getuserlogin> | `CortexClient::get_user_login`, `ResilientClient::get_user_login` | `match` | Typed deserialization in `UserLoginInfo`. |
+| `getUserLogin` | <https://emotiv.gitbook.io/cortex-api/authentication/getuserlogin> | `CortexClient::get_user_login`, `ResilientClient::get_user_login` | `partial` | Deterministic tests verify `UserLoginInfo` deserializes both `currentOSUId` and `loggedInOSUId` when present. The GitBook examples expose both fields but do not explain their semantic distinction, so auth field parity remains documentation-ambiguous. |
 | `requestAccess` | <https://emotiv.gitbook.io/cortex-api/authentication/requestaccess> | internal via `CortexClient::authenticate` | `match` | Gracefully handles unavailable method. |
 | `hasAccessRight` | <https://emotiv.gitbook.io/cortex-api/authentication/hasaccessright> | `CortexClient::has_access_right`, `ResilientClient::has_access_right` | `match` | Returns `accessGranted` bool. |
 | `authorize` | <https://emotiv.gitbook.io/cortex-api/authentication/authorize> | `CortexClient::authenticate` | `match` | Token extraction validated. |
@@ -21,9 +27,9 @@ Status legend:
 | `controlDevice` | <https://emotiv.gitbook.io/cortex-api/headset/controldevice> | `connect_headset`, `disconnect_headset`, `refresh_headsets` (+ resilient wrappers) | `match` | Uses documented `command` values. |
 | `configMapping` | <https://emotiv.gitbook.io/cortex-api/headset/configmapping> | `config_mapping` (+ resilient wrapper) | `match` | Typed request/response covers `create/get/read/update/delete` mode contracts. |
 | `queryHeadsets` | <https://emotiv.gitbook.io/cortex-api/headset/queryheadsets> | `query_headsets` (+ resilient wrapper) | `match` | Supports docs options (`id`, `includeFlexMappings`) and expanded headset fields. |
-| `updateHeadset` | <https://emotiv.gitbook.io/cortex-api/headset/updateheadset> | `update_headset` (+ resilient wrapper) | `match` | Uses `headset` and `setting`. |
-| `updateHeadsetCustomInfo` | <https://emotiv.gitbook.io/cortex-api/headset/updateheadsetcustominfo> | `update_headset_custom_info` (+ resilient wrapper) | `match` | Uses `headsetId` per docs; retains compatibility field. |
-| `syncWithHeadsetClock` | <https://emotiv.gitbook.io/cortex-api/headset/syncwithheadsetclock> | `sync_with_headset_clock` (+ resilient wrapper) | `match` | Uses docs payload (`headset`, `monotonicTime`, `systemTime`) and typed result parsing. |
+| `updateHeadset` | <https://emotiv.gitbook.io/cortex-api/headset/updateheadset> | `update_headset` (+ resilient wrapper) | `match` | Deterministic contract tests verify the request uses `headsetId` plus `setting`, matching the documented payload. |
+| `updateHeadsetCustomInfo` | <https://emotiv.gitbook.io/cortex-api/headset/updateheadsetcustominfo> | `update_headset_custom_info` (+ resilient wrapper) | `match` | Deterministic contract tests verify the request sends `headsetId` only; the crate no longer relies on a `headset` compatibility alias. |
+| `syncWithHeadsetClock` | <https://emotiv.gitbook.io/cortex-api/headset/syncwithheadsetclock> | `sync_with_headset_clock` (+ resilient wrapper) | `match` | Deterministic contract tests verify `headset`, numeric `monotonicTime`, and Unix-seconds `systemTime` with fractional precision, plus typed result parsing. |
 | `createSession` | <https://emotiv.gitbook.io/cortex-api/session/createsession> | `create_session` (+ resilient wrapper) | `match` | Uses `status: "active"`. |
 | `updateSession` | <https://emotiv.gitbook.io/cortex-api/session/updatesession> | `close_session` (+ resilient wrapper) | `match` | Close now propagates API errors. |
 | `querySessions` | <https://emotiv.gitbook.io/cortex-api/session/querysessions> | `query_sessions` (+ resilient wrapper) | `match` | Typed deserialization in `SessionInfo`. |
@@ -63,3 +69,4 @@ Status legend:
 ## Release criterion
 
 No rows are currently marked `mismatch`.
+One row remains `partial` because the upstream authentication docs do not define the distinction between `currentOSUId` and `loggedInOSUId`.

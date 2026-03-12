@@ -681,13 +681,23 @@ impl CortexClient {
 
     fn sync_with_headset_clock_params(&self, headset_id: &str) -> CortexResult<serde_json::Value> {
         let monotonic_time = self.clock_origin.elapsed().as_secs_f64();
-        let system_time = Self::current_epoch_millis()?;
+        let system_time = Self::current_epoch_seconds()?;
 
         Ok(Self::sync_with_headset_clock_params_with_times(
             headset_id,
             monotonic_time,
             system_time,
         ))
+    }
+
+    fn current_epoch_seconds() -> CortexResult<f64> {
+        let system_duration = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
+            CortexError::ProtocolError {
+                reason: format!("System clock is before UNIX epoch: {e}"),
+            }
+        })?;
+
+        Ok(system_duration.as_secs_f64())
     }
 
     fn current_epoch_millis() -> CortexResult<u64> {
@@ -705,12 +715,24 @@ impl CortexClient {
     fn sync_with_headset_clock_params_with_times(
         headset_id: &str,
         monotonic_time: f64,
-        system_time: u64,
+        system_time: f64,
     ) -> serde_json::Value {
         serde_json::json!({
             "headset": headset_id,
             "monotonicTime": monotonic_time,
             "systemTime": system_time,
+        })
+    }
+
+    fn update_headset_params(
+        cortex_token: &str,
+        headset_id: &str,
+        setting: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "cortexToken": cortex_token,
+            "headsetId": headset_id,
+            "setting": setting,
         })
     }
 
@@ -805,8 +827,6 @@ impl CortexClient {
         let mut params = serde_json::json!({
             "cortexToken": cortex_token,
             "headsetId": headset_id,
-            // Backward-compat for older deployments.
-            "headset": headset_id,
         });
 
         if let Some(pos) = headband_position {
@@ -1461,11 +1481,7 @@ impl CortexClient {
     ) -> CortexResult<serde_json::Value> {
         self.call(
             Methods::UPDATE_HEADSET,
-            serde_json::json!({
-                "cortexToken": cortex_token,
-                "headset": headset_id,
-                "setting": setting,
-            }),
+            Self::update_headset_params(cortex_token, headset_id, setting),
         )
         .await
     }
@@ -2797,12 +2813,30 @@ mod tests {
 
     #[test]
     fn test_sync_with_headset_clock_params_use_docs_shape() {
-        let params = CortexClient::sync_with_headset_clock_params_with_times("HS-123", 12.34, 5678);
+        let params =
+            CortexClient::sync_with_headset_clock_params_with_times("HS-123", 12.34, 5678.25);
         assert_eq!(params["headset"], "HS-123");
         assert_eq!(params["monotonicTime"], 12.34);
-        assert_eq!(params["systemTime"], 5678);
+        assert_eq!(params["systemTime"], 5678.25);
         assert!(params.get("cortexToken").is_none());
         assert!(params.get("headsetId").is_none());
+    }
+
+    #[test]
+    fn test_update_headset_uses_headset_id() {
+        let params = CortexClient::update_headset_params(
+            "token",
+            "HS-123",
+            serde_json::json!({
+                "mode": "EPOCPLUS",
+                "eegRate": 256,
+                "memsRate": 64,
+            }),
+        );
+        assert_eq!(params["cortexToken"], "token");
+        assert_eq!(params["headsetId"], "HS-123");
+        assert_eq!(params["setting"]["mode"], "EPOCPLUS");
+        assert!(params.get("headset").is_none());
     }
 
     #[test]
@@ -2814,18 +2848,18 @@ mod tests {
             Some("My Headset"),
         );
         assert_eq!(params["headsetId"], "HS-123");
-        assert_eq!(params["headset"], "HS-123");
         assert_eq!(params["headbandPosition"], "front");
         assert_eq!(params["customName"], "My Headset");
+        assert!(params.get("headset").is_none());
     }
 
     #[test]
     fn test_update_headset_custom_info_omits_optional_fields_when_none() {
         let params = CortexClient::update_headset_custom_info_params("token", "HS-123", None, None);
         assert_eq!(params["headsetId"], "HS-123");
-        assert_eq!(params["headset"], "HS-123");
         assert!(params.get("headbandPosition").is_none());
         assert!(params.get("customName").is_none());
+        assert!(params.get("headset").is_none());
     }
 
     #[test]

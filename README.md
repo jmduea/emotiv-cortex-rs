@@ -9,8 +9,15 @@ Rust workspace containing the source code for emotiv-cortex-v2 and emotiv-cortex
 - [`emotiv-cortex-v2`](https://github.com/jmduea/emotiv-cortex-rs/tree/main/crates/emotiv-cortex-v2)/[crates.io](https://crates.io/crates/emotiv-cortex-v2) - typed Rust client for the Emotiv Cortex v2 WebSocket API
 
 ## For people who just want an easy way to connect their device and see it in action/use lsl
+
 - [`emotiv-cortex-tui`](https://github.com/jmduea/emotiv-cortex-rs/tree/main/crates/emotiv-cortex-tui) - interactive TUI for exploring Cortex APIs and streaming
 self-documenting LSL outlets
+
+## Release policy
+
+- The next repository release is `0.4.0` for both `emotiv-cortex-v2` and `emotiv-cortex-tui`.
+- `emotiv-cortex-v2` is the only crates.io package published from this workspace.
+- `emotiv-cortex-tui` exact-pins `emotiv-cortex-v2 =0.4.0` and is distributed as Windows binaries on GitHub Releases; non-Windows users should build it from source.
 
 ## Contributors
 

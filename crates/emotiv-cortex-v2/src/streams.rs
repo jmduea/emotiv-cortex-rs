@@ -362,15 +362,18 @@ pub async fn subscribe_metrics(
         })
         .unwrap_or_default();
 
-    let col_idx = |name: &str| cols.iter().position(|c| c == name);
-    let att_idx = col_idx("attention");
-    let eng_idx = col_idx("eng");
-    let exc_idx = col_idx("exc");
-    let lex_idx = col_idx("lex");
-    let str_idx = col_idx("str");
-    let rel_idx = col_idx("rel");
-    let int_idx = col_idx("int");
-    let foc_idx = col_idx("foc");
+    let col_idx = |names: &[&str]| {
+        cols.iter()
+            .position(|column| names.contains(&column.as_str()))
+    };
+    let att_idx = col_idx(&["attention"]);
+    let eng_idx = col_idx(&["eng", "engagement"]);
+    let exc_idx = col_idx(&["exc", "excitement"]);
+    let lex_idx = col_idx(&["lex", "longExcitement"]);
+    let str_idx = col_idx(&["str", "stress", "cognitiveStress"]);
+    let rel_idx = col_idx(&["rel", "relaxation"]);
+    let int_idx = col_idx(&["int", "interest"]);
+    let foc_idx = col_idx(&["foc", "focus"]);
 
     Ok(Box::pin(TypedStream::new(rx, move |event| {
         let met = event.get("met")?.as_array()?;

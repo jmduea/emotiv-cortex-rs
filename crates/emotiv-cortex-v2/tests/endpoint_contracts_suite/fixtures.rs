@@ -1,6 +1,8 @@
-use emotiv_cortex_v2::protocol::constants::Methods;
+use emotiv_cortex_v2::protocol::constants::{Methods, Streams};
 use serde_json::{Value, json};
 
+pub(super) const CLIENT_ID: &str = "test-client-id";
+pub(super) const CLIENT_SECRET: &str = "test-client-secret";
 pub(super) const TOKEN_CORTEX: &str = "token-contract";
 pub(super) const TOKEN_RESILIENT: &str = "token-resilient";
 pub(super) const SESSION_ID: &str = "session-001";
@@ -9,9 +11,38 @@ pub(super) const PROFILE_NAME: &str = "profile-alpha";
 pub(super) const RECORD_ID: &str = "record-1";
 pub(super) const SUBJECT_NAME: &str = "subject-a";
 pub(super) const FACIAL_ACTION: &str = "smile";
+pub(super) const MAPPING_UUID: &str = "mapping-001";
+pub(super) const MARKER_ID: &str = "marker-001";
+pub(super) const MARKER_LABEL: &str = "stimulus";
+pub(super) const HEADBAND_POSITION: &str = "left-temple";
+pub(super) const CUSTOM_HEADSET_NAME: &str = "Contract Headset";
+
+pub(super) const CONTRACT_STREAMS: [&str; 3] = [Streams::MOT, Streams::MET, Streams::COM];
 
 #[derive(Debug, Clone)]
 pub(super) enum StepKind {
+    HasAccessRight,
+    GetUserLogin,
+    GetUserInfo,
+    GetLicenseInfo,
+    ConnectHeadset,
+    DisconnectHeadset,
+    RefreshHeadsets,
+    ConfigMappingCreate,
+    ConfigMappingGet,
+    ConfigMappingRead,
+    ConfigMappingUpdate,
+    ConfigMappingDelete,
+    UpdateHeadset,
+    UpdateHeadsetCustomInfo,
+    SyncWithHeadsetClock,
+    CreateSession,
+    CloseSession,
+    QuerySessions,
+    SubscribeStreams,
+    UnsubscribeStreams,
+    InjectMarker,
+    UpdateMarker,
     CreateRecord,
     StopRecord,
     QueryRecords,
@@ -84,8 +115,409 @@ pub(super) fn subject_order() -> Value {
     json!([{ "subjectName": "ASC" }])
 }
 
+pub(super) fn config_mapping_create_mappings() -> Value {
+    json!({
+        "CMS": "TP9",
+        "DRL": "TP10",
+    })
+}
+
+pub(super) fn config_mapping_updated_mappings() -> Value {
+    json!({
+        "CMS": "C3",
+        "DRL": "C4",
+    })
+}
+
+pub(super) fn session_response() -> Value {
+    json!({
+        "id": SESSION_ID,
+        "status": "activated",
+        "owner": "contract-user",
+        "license": "license-001",
+        "appId": "com.contract.test",
+        "started": "2026-02-12T08:59:00Z",
+        "streams": [Streams::MOT],
+        "recordIds": [RECORD_ID],
+        "recording": false,
+        "headset": {
+            "id": HEADSET_ID,
+            "status": "connected",
+        }
+    })
+}
+
 pub(super) fn build_contract_steps(token: &str) -> Vec<ContractStep> {
     vec![
+        ContractStep {
+            domain: "auth",
+            name: "has_access_right",
+            kind: StepKind::HasAccessRight,
+            method: Methods::HAS_ACCESS_RIGHT,
+            expected_params: json!({
+                "clientId": CLIENT_ID,
+                "clientSecret": CLIENT_SECRET,
+            }),
+            absent_params: vec!["cortexToken"],
+            response: json!({
+                "accessGranted": true,
+                "message": "This application has been approved"
+            }),
+        },
+        ContractStep {
+            domain: "auth",
+            name: "get_user_login",
+            kind: StepKind::GetUserLogin,
+            method: Methods::GET_USER_LOGIN,
+            expected_params: json!({}),
+            absent_params: vec!["cortexToken"],
+            response: json!([
+                {
+                    "username": "contract-user",
+                    "currentOSUId": "launcher",
+                    "loggedInOSUId": "launcher",
+                    "lastLoginTime": "2026-02-12T08:00:00Z"
+                }
+            ]),
+        },
+        ContractStep {
+            domain: "auth",
+            name: "get_user_info",
+            kind: StepKind::GetUserInfo,
+            method: Methods::GET_USER_INFO,
+            expected_params: json!({
+                "cortexToken": token,
+            }),
+            absent_params: vec![],
+            response: json!({
+                "username": "contract-user",
+                "firstName": "Contract",
+                "lastName": "Tester"
+            }),
+        },
+        ContractStep {
+            domain: "auth",
+            name: "get_license_info",
+            kind: StepKind::GetLicenseInfo,
+            method: Methods::GET_LICENSE_INFO,
+            expected_params: json!({
+                "cortexToken": token,
+            }),
+            absent_params: vec![],
+            response: json!({
+                "isOnline": true,
+                "license": {
+                    "id": "license-001",
+                    "scopes": ["eeg", "pm"]
+                }
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "connect_headset",
+            kind: StepKind::ConnectHeadset,
+            method: Methods::CONTROL_DEVICE,
+            expected_params: json!({
+                "command": "connect",
+                "headset": HEADSET_ID,
+            }),
+            absent_params: vec![],
+            response: json!({
+                "message": "connect issued"
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "disconnect_headset",
+            kind: StepKind::DisconnectHeadset,
+            method: Methods::CONTROL_DEVICE,
+            expected_params: json!({
+                "command": "disconnect",
+                "headset": HEADSET_ID,
+            }),
+            absent_params: vec![],
+            response: json!({
+                "message": "disconnect issued"
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "refresh_headsets",
+            kind: StepKind::RefreshHeadsets,
+            method: Methods::CONTROL_DEVICE,
+            expected_params: json!({
+                "command": "refresh",
+            }),
+            absent_params: vec!["headset"],
+            response: json!({
+                "message": "refresh issued"
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "config_mapping_create",
+            kind: StepKind::ConfigMappingCreate,
+            method: Methods::CONFIG_MAPPING,
+            expected_params: json!({
+                "cortexToken": token,
+                "status": "create",
+                "name": "Flex Contract",
+                "mappings": config_mapping_create_mappings(),
+            }),
+            absent_params: vec!["uuid"],
+            response: json!({
+                "message": "Create flex mapping config successful",
+                "value": {
+                    "label": {},
+                    "mappings": config_mapping_create_mappings(),
+                    "name": "Flex Contract",
+                    "uuid": MAPPING_UUID
+                }
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "config_mapping_get",
+            kind: StepKind::ConfigMappingGet,
+            method: Methods::CONFIG_MAPPING,
+            expected_params: json!({
+                "cortexToken": token,
+                "status": "get",
+            }),
+            absent_params: vec!["uuid", "name", "mappings"],
+            response: json!({
+                "message": "Get flex mapping config successful",
+                "value": {
+                    "config": [{
+                        "label": {},
+                        "mappings": config_mapping_create_mappings(),
+                        "name": "Flex Contract",
+                        "uuid": MAPPING_UUID
+                    }],
+                    "updated": "2026-02-12T08:30:00Z",
+                    "version": "2026-02-12"
+                }
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "config_mapping_read",
+            kind: StepKind::ConfigMappingRead,
+            method: Methods::CONFIG_MAPPING,
+            expected_params: json!({
+                "cortexToken": token,
+                "status": "read",
+                "uuid": MAPPING_UUID,
+            }),
+            absent_params: vec!["name", "mappings"],
+            response: json!({
+                "message": "Read flex mapping config successful",
+                "value": {
+                    "label": {},
+                    "mappings": config_mapping_create_mappings(),
+                    "name": "Flex Contract",
+                    "uuid": MAPPING_UUID
+                }
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "config_mapping_update",
+            kind: StepKind::ConfigMappingUpdate,
+            method: Methods::CONFIG_MAPPING,
+            expected_params: json!({
+                "cortexToken": token,
+                "status": "update",
+                "uuid": MAPPING_UUID,
+                "name": "Flex Contract Updated",
+                "mappings": config_mapping_updated_mappings(),
+            }),
+            absent_params: vec![],
+            response: json!({
+                "message": "Update flex mapping config successful",
+                "value": {
+                    "label": {},
+                    "mappings": config_mapping_updated_mappings(),
+                    "name": "Flex Contract Updated",
+                    "uuid": MAPPING_UUID
+                }
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "config_mapping_delete",
+            kind: StepKind::ConfigMappingDelete,
+            method: Methods::CONFIG_MAPPING,
+            expected_params: json!({
+                "cortexToken": token,
+                "status": "delete",
+                "uuid": MAPPING_UUID,
+            }),
+            absent_params: vec!["name", "mappings"],
+            response: json!({
+                "message": "Delete flex mapping config successful",
+                "uuid": MAPPING_UUID
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "update_headset",
+            kind: StepKind::UpdateHeadset,
+            method: Methods::UPDATE_HEADSET,
+            expected_params: json!({
+                "cortexToken": token,
+                "headsetId": HEADSET_ID,
+                "setting": {
+                    "mode": "EPOCPLUS",
+                    "eegRate": 256,
+                    "memsRate": 64
+                },
+            }),
+            absent_params: vec!["headset"],
+            response: json!({
+                "message": "Update headset successful",
+                "headsetId": HEADSET_ID
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "update_headset_custom_info",
+            kind: StepKind::UpdateHeadsetCustomInfo,
+            method: Methods::UPDATE_HEADSET_CUSTOM_INFO,
+            expected_params: json!({
+                "cortexToken": token,
+                "headsetId": HEADSET_ID,
+                "headbandPosition": HEADBAND_POSITION,
+                "customName": CUSTOM_HEADSET_NAME,
+            }),
+            absent_params: vec!["headset"],
+            response: json!({
+                "headsetId": HEADSET_ID,
+                "headbandPosition": HEADBAND_POSITION,
+                "customName": CUSTOM_HEADSET_NAME
+            }),
+        },
+        ContractStep {
+            domain: "headset",
+            name: "sync_with_headset_clock",
+            kind: StepKind::SyncWithHeadsetClock,
+            method: Methods::SYNC_WITH_HEADSET_CLOCK,
+            expected_params: json!({
+                "headset": HEADSET_ID,
+            }),
+            absent_params: vec!["cortexToken", "headsetId"],
+            response: json!({
+                "adjustment": 0.0123,
+                "headset": HEADSET_ID
+            }),
+        },
+        ContractStep {
+            domain: "session",
+            name: "create_session",
+            kind: StepKind::CreateSession,
+            method: Methods::CREATE_SESSION,
+            expected_params: json!({
+                "cortexToken": token,
+                "headset": HEADSET_ID,
+                "status": "active",
+            }),
+            absent_params: vec![],
+            response: session_response(),
+        },
+        ContractStep {
+            domain: "session",
+            name: "close_session",
+            kind: StepKind::CloseSession,
+            method: Methods::UPDATE_SESSION,
+            expected_params: json!({
+                "cortexToken": token,
+                "session": SESSION_ID,
+                "status": "close",
+            }),
+            absent_params: vec![],
+            response: json!({
+                "message": "Session closed"
+            }),
+        },
+        ContractStep {
+            domain: "session",
+            name: "query_sessions",
+            kind: StepKind::QuerySessions,
+            method: Methods::QUERY_SESSIONS,
+            expected_params: json!({
+                "cortexToken": token,
+            }),
+            absent_params: vec![],
+            response: json!([session_response()]),
+        },
+        ContractStep {
+            domain: "subscription",
+            name: "subscribe_streams",
+            kind: StepKind::SubscribeStreams,
+            method: Methods::SUBSCRIBE,
+            expected_params: json!({
+                "cortexToken": token,
+                "session": SESSION_ID,
+                "streams": CONTRACT_STREAMS,
+            }),
+            absent_params: vec![],
+            response: json!({
+                "success": CONTRACT_STREAMS,
+                "failure": []
+            }),
+        },
+        ContractStep {
+            domain: "subscription",
+            name: "unsubscribe_streams",
+            kind: StepKind::UnsubscribeStreams,
+            method: Methods::UNSUBSCRIBE,
+            expected_params: json!({
+                "cortexToken": token,
+                "session": SESSION_ID,
+                "streams": CONTRACT_STREAMS,
+            }),
+            absent_params: vec![],
+            response: json!({
+                "message": "Streams unsubscribed"
+            }),
+        },
+        ContractStep {
+            domain: "markers",
+            name: "inject_marker",
+            kind: StepKind::InjectMarker,
+            method: Methods::INJECT_MARKER,
+            expected_params: json!({
+                "cortexToken": token,
+                "session": SESSION_ID,
+                "label": MARKER_LABEL,
+                "value": 42,
+                "port": "python-app",
+                "time": 12345.0,
+            }),
+            absent_params: vec![],
+            response: json!({
+                "marker": {
+                    "uuid": MARKER_ID,
+                    "startDatetime": "2026-02-12T09:01:00Z"
+                }
+            }),
+        },
+        ContractStep {
+            domain: "markers",
+            name: "update_marker",
+            kind: StepKind::UpdateMarker,
+            method: Methods::UPDATE_MARKER,
+            expected_params: json!({
+                "cortexToken": token,
+                "session": SESSION_ID,
+                "markerId": MARKER_ID,
+                "time": 12346.0,
+            }),
+            absent_params: vec![],
+            response: json!({
+                "message": "Marker updated"
+            }),
+        },
         ContractStep {
             domain: "records",
             name: "create_record",

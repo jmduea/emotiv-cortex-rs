@@ -1,135 +1,148 @@
 name: Quality Ratchet
 
 on:
-  schedule:
-    - cron: "0 4 * * 1"
-  workflow_dispatch:
+    schedule:
+        - cron: "0 4 * * 1"
+    workflow_dispatch:
 
 permissions:
-  contents: write
-  pull-requests: write
+    contents: write
+    pull-requests: write
 
 jobs:
-  ratchet:
-    name: Tighten quality thresholds
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    ratchet:
+        name: Tighten quality thresholds
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+            - uses: dtolnay/rust-toolchain@stable
 
-      - uses: taiki-e/install-action@cargo-llvm-cov
+            - uses: taiki-e/install-action@cargo-llvm-cov
 
-      - uses: Swatinem/rust-cache@v2
+            - uses: Swatinem/rust-cache@v2
 
-      - name: Compute fresh quality baselines
-        env:
-          EMOTIV_SKIP_LIVE_TESTS: "1"
-        shell: bash
-        run: |
-          set -euo pipefail
+            - name: Compute fresh quality baselines
+              id: baselines
+              env:
+                  EMOTIV_SKIP_LIVE_TESTS: "1"
+              shell: bash
+              run: |
+                  set -euo pipefail
 
-          current_v2=$(grep -E '^  CLIPPY_WARNINGS_V2_MAX:' .github/workflows/ci.yml | sed -E 's/.*"([0-9]+)".*/\1/')
-          current_cli=$(grep -E '^  CLIPPY_WARNINGS_CLI_MAX:' .github/workflows/ci.yml | sed -E 's/.*"([0-9]+)".*/\1/')
-          current_cov=$(grep -E '^  COVERAGE_MIN_LINES:' .github/workflows/ci.yml | sed -E 's/.*"([0-9]+)".*/\1/')
+                  current_v2=$(grep -E '^  CLIPPY_WARNINGS_V2_MAX:' .github/workflows/ci.yml | sed -E 's/.*"([0-9]+)".*/\1/')
+                  current_tui=$(grep -E '^  CLIPPY_WARNINGS_TUI_MAX:' .github/workflows/ci.yml | sed -E 's/.*"([0-9]+)".*/\1/')
+                  current_cov=$(grep -E '^  COVERAGE_MIN_LINES:' .github/workflows/ci.yml | sed -E 's/.*"([0-9]+)".*/\1/')
 
-          measured_v2=$current_v2
-          v2_ratchet_mode="measured"
-          if [ "$current_v2" -gt 0 ]; then
-            cargo clippy -p emotiv-cortex-v2 --lib \
-              --no-default-features --features rustls-tls,config-toml \
-              -- -D clippy::unwrap_used -D clippy::expect_used \
-              -D clippy::panic -D clippy::todo -D clippy::unimplemented \
-              2>&1 | tee clippy-v2.txt
-            measured_v2=$(grep -cE '^warning(\[[^]]+\])?:' clippy-v2.txt || true)
-          else
-            v2_ratchet_mode="skipped_floor_zero"
-            echo "Skipping v2 clippy ratchet: budget already 0"
-          fi
+                  measured_v2=$current_v2
+                  v2_ratchet_mode="measured"
+                  if [ "$current_v2" -gt 0 ]; then
+                    cargo clippy -p emotiv-cortex-v2 --lib \
+                      --no-default-features --features rustls-tls,config-toml \
+                      -- -D clippy::unwrap_used -D clippy::expect_used \
+                      -D clippy::panic -D clippy::todo -D clippy::unimplemented \
+                      2>&1 | tee clippy-v2.txt
+                    measured_v2=$(grep -cE '^warning(\[[^]]+\])?:' clippy-v2.txt || true)
+                  else
+                    v2_ratchet_mode="skipped_floor_zero"
+                    echo "Skipping v2 clippy ratchet: budget already 0"
+                  fi
 
-          measured_cli=$current_cli
-          cli_ratchet_mode="measured"
-          if [ "$current_cli" -gt 0 ]; then
-            cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui \
-              --no-default-features \
-              -- -D clippy::unwrap_used -D clippy::expect_used \
-              -D clippy::panic -D clippy::todo -D clippy::unimplemented \
-              2>&1 | tee clippy-cli.txt
-            measured_cli=$(grep -cE '^warning(\[[^]]+\])?:' clippy-cli.txt || true)
-          else
-            cli_ratchet_mode="skipped_floor_zero"
-            echo "Skipping CLI clippy ratchet: budget already 0"
-          fi
+                  measured_tui=$current_tui
+                  tui_ratchet_mode="measured"
+                  if [ "$current_tui" -gt 0 ]; then
+                    cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui \
+                      --no-default-features \
+                      -- -D clippy::unwrap_used -D clippy::expect_used \
+                      -D clippy::panic -D clippy::todo -D clippy::unimplemented \
+                      2>&1 | tee clippy-tui.txt
+                    measured_tui=$(grep -cE '^warning(\[[^]]+\])?:' clippy-tui.txt || true)
+                  else
+                    tui_ratchet_mode="skipped_floor_zero"
+                    echo "Skipping emotiv-cortex-tui clippy ratchet: budget already 0"
+                  fi
 
-          cargo llvm-cov --workspace --all-targets --summary-only | tee coverage.txt
-          measured_cov=$(grep '^TOTAL' coverage.txt | awk '{print $4}' | tr -d '%')
-          measured_cov_floor=$(awk -v v="$measured_cov" 'BEGIN { printf("%d", v) }')
+                  cargo llvm-cov --workspace --all-targets --summary-only | tee coverage.txt
+                  measured_cov=$(grep '^TOTAL' coverage.txt | awk '{print $4}' | tr -d '%')
+                  measured_cov_floor=$(awk -v v="$measured_cov" 'BEGIN { printf("%d", v) }')
 
-          next_v2=$current_v2
-          next_cli=$current_cli
-          next_cov=$current_cov
+                  next_v2=$current_v2
+                  next_tui=$current_tui
+                  next_cov=$current_cov
 
-          if [ "$measured_v2" -lt "$current_v2" ]; then
-            next_v2=$measured_v2
-          fi
+                  if [ "$measured_v2" -lt "$current_v2" ]; then
+                    next_v2=$measured_v2
+                  fi
 
-          if [ "$measured_cli" -lt "$current_cli" ]; then
-            next_cli=$measured_cli
-          fi
+                  if [ "$measured_tui" -lt "$current_tui" ]; then
+                    next_tui=$measured_tui
+                  fi
 
-          if [ "$measured_cov_floor" -gt "$current_cov" ]; then
-            next_cov=$measured_cov_floor
-          fi
+                  if [ "$measured_cov_floor" -gt "$current_cov" ]; then
+                    next_cov=$measured_cov_floor
+                  fi
 
-          echo "CURRENT_V2=$current_v2" >> "$GITHUB_ENV"
-          echo "CURRENT_CLI=$current_cli" >> "$GITHUB_ENV"
-          echo "CURRENT_COV=$current_cov" >> "$GITHUB_ENV"
-          echo "MEASURED_V2=$measured_v2" >> "$GITHUB_ENV"
-          echo "MEASURED_CLI=$measured_cli" >> "$GITHUB_ENV"
-          echo "MEASURED_COV=$measured_cov" >> "$GITHUB_ENV"
-          echo "V2_RATCHET_MODE=$v2_ratchet_mode" >> "$GITHUB_ENV"
-          echo "CLI_RATCHET_MODE=$cli_ratchet_mode" >> "$GITHUB_ENV"
-          echo "NEXT_V2=$next_v2" >> "$GITHUB_ENV"
-          echo "NEXT_CLI=$next_cli" >> "$GITHUB_ENV"
-          echo "NEXT_COV=$next_cov" >> "$GITHUB_ENV"
+                  echo "CURRENT_V2=$current_v2" >> "$GITHUB_ENV"
+                  echo "CURRENT_TUI=$current_tui" >> "$GITHUB_ENV"
+                  echo "CURRENT_COV=$current_cov" >> "$GITHUB_ENV"
+                  echo "MEASURED_V2=$measured_v2" >> "$GITHUB_ENV"
+                  echo "MEASURED_TUI=$measured_tui" >> "$GITHUB_ENV"
+                  echo "MEASURED_COV=$measured_cov" >> "$GITHUB_ENV"
+                  echo "V2_RATCHET_MODE=$v2_ratchet_mode" >> "$GITHUB_ENV"
+                  echo "TUI_RATCHET_MODE=$tui_ratchet_mode" >> "$GITHUB_ENV"
+                  echo "NEXT_V2=$next_v2" >> "$GITHUB_ENV"
+                  echo "NEXT_TUI=$next_tui" >> "$GITHUB_ENV"
+                  echo "NEXT_COV=$next_cov" >> "$GITHUB_ENV"
 
-      - name: Update CI thresholds if improved
-        shell: bash
-        run: |
-          set -euo pipefail
+                  echo "current_v2=$current_v2" >> "$GITHUB_OUTPUT"
+                  echo "current_tui=$current_tui" >> "$GITHUB_OUTPUT"
+                  echo "current_cov=$current_cov" >> "$GITHUB_OUTPUT"
+                  echo "measured_v2=$measured_v2" >> "$GITHUB_OUTPUT"
+                  echo "measured_tui=$measured_tui" >> "$GITHUB_OUTPUT"
+                  echo "measured_cov=$measured_cov" >> "$GITHUB_OUTPUT"
+                  echo "v2_ratchet_mode=$v2_ratchet_mode" >> "$GITHUB_OUTPUT"
+                  echo "tui_ratchet_mode=$tui_ratchet_mode" >> "$GITHUB_OUTPUT"
+                  echo "next_v2=$next_v2" >> "$GITHUB_OUTPUT"
+                  echo "next_tui=$next_tui" >> "$GITHUB_OUTPUT"
+                  echo "next_cov=$next_cov" >> "$GITHUB_OUTPUT"
 
-          if [ "$NEXT_V2" = "$CURRENT_V2" ] && [ "$NEXT_CLI" = "$CURRENT_CLI" ] && [ "$NEXT_COV" = "$CURRENT_COV" ]; then
-            echo "No ratchet changes needed."
-            exit 0
-          fi
+            - name: Update CI thresholds if improved
+              shell: bash
+              run: |
+                  set -euo pipefail
 
-          sed -i -E "s/^(  CLIPPY_WARNINGS_V2_MAX: )\"[0-9]+\"/\1\"$NEXT_V2\"/" .github/workflows/ci.yml
-          sed -i -E "s/^(  CLIPPY_WARNINGS_CLI_MAX: )\"[0-9]+\"/\1\"$NEXT_CLI\"/" .github/workflows/ci.yml
-          sed -i -E "s/^(  COVERAGE_MIN_LINES: )\"[0-9]+\"/\1\"$NEXT_COV\"/" .github/workflows/ci.yml
+                  if [ "$NEXT_V2" = "$CURRENT_V2" ] && [ "$NEXT_TUI" = "$CURRENT_TUI" ] && [ "$NEXT_COV" = "$CURRENT_COV" ]; then
+                    echo "No ratchet changes needed."
+                    exit 0
+                  fi
 
-          echo "Ratchet updated: v2=$CURRENT_V2->$NEXT_V2, cli=$CURRENT_CLI->$NEXT_CLI, cov=$CURRENT_COV->$NEXT_COV"
+                  sed -i -E "s/^(  CLIPPY_WARNINGS_V2_MAX: )\"[0-9]+\"/\1\"$NEXT_V2\"/" .github/workflows/ci.yml
+                  sed -i -E "s/^(  CLIPPY_WARNINGS_TUI_MAX: )\"[0-9]+\"/\1\"$NEXT_TUI\"/" .github/workflows/ci.yml
+                  sed -i -E "s/^(  COVERAGE_MIN_LINES: )\"[0-9]+\"/\1\"$NEXT_COV\"/" .github/workflows/ci.yml
 
-      - name: Create pull request for ratchet updates
-        uses: peter-evans/create-pull-request@v6
-        with:
-          branch: ci/quality-ratchet
-          title: "ci: ratchet quality thresholds"
-          commit-message: "ci: ratchet quality thresholds"
-          body: |
-            Automated quality ratchet update.
+                  echo "Ratchet updated: v2=$CURRENT_V2->$NEXT_V2, tui=$CURRENT_TUI->$NEXT_TUI, cov=$CURRENT_COV->$NEXT_COV"
 
-            - `CLIPPY_WARNINGS_V2_MAX`: `${{ env.CURRENT_V2 }}` -> `${{ env.NEXT_V2 }}`
-            - `CLIPPY_WARNINGS_CLI_MAX`: `${{ env.CURRENT_CLI }}` -> `${{ env.NEXT_CLI }}`
-            - `COVERAGE_MIN_LINES`: `${{ env.CURRENT_COV }}` -> `${{ env.NEXT_COV }}`
+            - name: Create pull request for ratchet updates
+              uses: peter-evans/create-pull-request@v6
+              with:
+                  branch: ci/quality-ratchet
+                  title: "ci: ratchet quality thresholds"
+                  commit-message: "ci: ratchet quality thresholds"
+                  body: |
+                      Automated quality ratchet update.
 
-            Measurements from this run:
-            - v2 warnings: `${{ env.MEASURED_V2 }}`
-            - v2 ratchet mode: `${{ env.V2_RATCHET_MODE }}`
-            - cli warnings: `${{ env.MEASURED_CLI }}`
-            - cli ratchet mode: `${{ env.CLI_RATCHET_MODE }}`
-            - coverage line %: `${{ env.MEASURED_COV }}`
-          labels: |
-            ci
-            technical-debt
-          add-paths: |
-            .github/workflows/ci.yml
+                      - `CLIPPY_WARNINGS_V2_MAX`: `${{ steps.baselines.outputs.current_v2 }}` -> `${{ steps.baselines.outputs.next_v2 }}`
+                      - `CLIPPY_WARNINGS_TUI_MAX`: `${{ steps.baselines.outputs.current_tui }}` -> `${{ steps.baselines.outputs.next_tui }}`
+                      - `COVERAGE_MIN_LINES`: `${{ steps.baselines.outputs.current_cov }}` -> `${{ steps.baselines.outputs.next_cov }}`
+
+                      Measurements from this run:
+                      - v2 warnings: `${{ steps.baselines.outputs.measured_v2 }}`
+                      - v2 ratchet mode: `${{ steps.baselines.outputs.v2_ratchet_mode }}`
+                      - emotiv-cortex-tui warnings: `${{ steps.baselines.outputs.measured_tui }}`
+                      - emotiv-cortex-tui ratchet mode: `${{ steps.baselines.outputs.tui_ratchet_mode }}`
+                      - coverage line %: `${{ steps.baselines.outputs.measured_cov }}`
+                  labels: |
+                      ci
+                      technical-debt
+                  add-paths: |
+                      .github/workflows/ci.yml

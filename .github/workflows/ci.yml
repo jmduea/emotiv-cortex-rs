@@ -9,7 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CLIPPY_WARNINGS_V2_MAX: "0"
-  CLIPPY_WARNINGS_CLI_MAX: "0"
+  CLIPPY_WARNINGS_TUI_MAX: "0"
   COVERAGE_MIN_LINES: "48"
 
 jobs:
@@ -41,7 +41,7 @@ jobs:
             exit 1
           fi
 
-      - name: Clippy gate (CLI no default features + warning budget)
+      - name: Clippy gate (TUI no default features + warning budget)
         shell: bash
         run: |
           set -euo pipefail
@@ -49,11 +49,11 @@ jobs:
             --no-default-features \
             -- -D clippy::unwrap_used -D clippy::expect_used \
             -D clippy::panic -D clippy::todo -D clippy::unimplemented \
-            2>&1 | tee clippy-cli.txt
+            2>&1 | tee clippy-tui.txt
 
-          warning_count=$(grep -cE '^warning(\[[^]]+\])?:' clippy-cli.txt || true)
-          echo "emotiv-cortex-tui clippy warnings: ${warning_count} (budget: ${CLIPPY_WARNINGS_CLI_MAX})"
-          if [ "${warning_count}" -gt "${CLIPPY_WARNINGS_CLI_MAX}" ]; then
+          warning_count=$(grep -cE '^warning(\[[^]]+\])?:' clippy-tui.txt || true)
+          echo "emotiv-cortex-tui clippy warnings: ${warning_count} (budget: ${CLIPPY_WARNINGS_TUI_MAX})"
+          if [ "${warning_count}" -gt "${CLIPPY_WARNINGS_TUI_MAX}" ]; then
             echo "clippy warning budget exceeded for emotiv-cortex-tui"
             exit 1
           fi
@@ -65,7 +65,7 @@ jobs:
           --no-default-features --features rustls-tls,config-toml
           -- -W clippy::pedantic
 
-      - name: Clippy pedantic report (CLI no default features)
+      - name: Clippy pedantic report (TUI no default features)
         continue-on-error: true
         run: >
           cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui
@@ -144,10 +144,10 @@ jobs:
           cargo test -p emotiv-cortex-v2
           --no-default-features --features rustls-tls,config-toml
 
-      - name: Check CLI (no default features)
+      - name: Check TUI (no default features)
         run: cargo check -p emotiv-cortex-tui --no-default-features
 
-      - name: Test CLI (no default features)
+      - name: Test TUI (no default features)
         run: cargo test -p emotiv-cortex-tui --no-default-features
 
   native-tls:
@@ -227,17 +227,17 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   lsl-windows:
-    name: Check CLI LSL (Windows)
+    name: Check TUI LSL (Windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check CLI (LSL feature)
+      - name: Check TUI (LSL feature)
         run: cargo check -p emotiv-cortex-tui --no-default-features --features lsl
 
-      - name: Test CLI (LSL feature)
+      - name: Test TUI (LSL feature)
         run: cargo test -p emotiv-cortex-tui --no-default-features --features lsl
 
   package:

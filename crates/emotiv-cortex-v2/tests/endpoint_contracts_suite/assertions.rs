@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::fixtures::ContractStep;
+use super::fixtures::{ContractStep, StepKind};
 
 pub(super) fn rpc_id(request: &Value) -> u64 {
     match request.get("id").and_then(Value::as_u64) {
@@ -19,18 +19,20 @@ pub(super) fn assert_request_matches_step(request: &Value, step: &ContractStep) 
         step.name
     );
 
-    let params = match request.get("params").and_then(Value::as_object) {
-        Some(params) => params,
-        None => panic!(
-            "request missing params object for {}::{}",
-            step.domain, step.name
-        ),
-    };
-
     let expected = match step.expected_params.as_object() {
         Some(expected) => expected,
         None => panic!(
             "expected_params must be an object for {}::{}",
+            step.domain, step.name
+        ),
+    };
+
+    let empty_params = serde_json::Map::new();
+    let params = match request.get("params").and_then(Value::as_object) {
+        Some(params) => params,
+        None if expected.is_empty() => &empty_params,
+        None => panic!(
+            "request missing params object for {}::{}",
             step.domain, step.name
         ),
     };
@@ -53,6 +55,27 @@ pub(super) fn assert_request_matches_step(request: &Value, step: &ContractStep) 
             step.domain,
             step.name,
             key
+        );
+    }
+
+    if let StepKind::SyncWithHeadsetClock = step.kind {
+        assert!(
+            params
+                .get("monotonicTime")
+                .and_then(Value::as_f64)
+                .is_some(),
+            "{}::{} missing numeric monotonicTime",
+            step.domain,
+            step.name
+        );
+        assert!(
+            params
+                .get("systemTime")
+                .and_then(Value::as_f64)
+                .is_some_and(|value| (1_000_000_000.0..10_000_000_000.0).contains(&value)),
+            "{}::{} missing unix-seconds systemTime",
+            step.domain,
+            step.name
         );
     }
 }
