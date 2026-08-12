@@ -94,10 +94,10 @@ client_secret = "your-client-secret"
 
 ## Examples
 
-See the `[examples/](examples/)` directory for complete working examples covering all API areas.
+See the [examples/](examples/) directory for complete working examples covering all API areas.
 
 For endpoint-by-endpoint compatibility tracking against the official API reference,
-see `[docs/api-parity.md](docs/api-parity.md)`. That matrix only marks `match` where deterministic mock contract tests or documented workflow tests exist, and it calls out any remaining documentation ambiguity explicitly.
+see [docs/api-parity.md](docs/api-parity.md). That matrix only marks `match` where deterministic mock contract tests or documented workflow tests exist, and it calls out any remaining documentation ambiguity explicitly.
 
 ## Testing
 
