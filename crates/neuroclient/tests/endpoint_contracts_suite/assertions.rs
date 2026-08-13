@@ -1,0 +1,80 @@
+use serde_json::Value;
+
+use super::fixtures::{ContractStep, StepKind};
+
+pub(super) fn rpc_id(request: &Value) -> u64 {
+    match request.get("id").and_then(Value::as_u64) {
+        Some(id) => id,
+        None => panic!("request missing numeric id: {request}"),
+    }
+}
+
+pub(super) fn assert_request_matches_step(request: &Value, step: &ContractStep) {
+    let method = request.get("method").and_then(Value::as_str);
+    assert_eq!(
+        method,
+        Some(step.method),
+        "unexpected method for {}::{}",
+        step.domain,
+        step.name
+    );
+
+    let Some(expected) = step.expected_params.as_object() else {
+        panic!(
+            "expected_params must be an object for {}::{}",
+            step.domain, step.name
+        )
+    };
+
+    let empty_params = serde_json::Map::new();
+    let params = match request.get("params").and_then(Value::as_object) {
+        Some(params) => params,
+        None if expected.is_empty() => &empty_params,
+        None => panic!(
+            "request missing params object for {}::{}",
+            step.domain, step.name
+        ),
+    };
+
+    for (key, expected_value) in expected {
+        assert_eq!(
+            params.get(key),
+            Some(expected_value),
+            "mismatch in {}::{} param '{}'",
+            step.domain,
+            step.name,
+            key
+        );
+    }
+
+    for key in &step.absent_params {
+        assert!(
+            !params.contains_key(*key),
+            "{}::{} unexpectedly included param '{}'",
+            step.domain,
+            step.name,
+            key
+        );
+    }
+
+    if let StepKind::SyncWithHeadsetClock = step.kind {
+        assert!(
+            params
+                .get("monotonicTime")
+                .and_then(Value::as_f64)
+                .is_some(),
+            "{}::{} missing numeric monotonicTime",
+            step.domain,
+            step.name
+        );
+        assert!(
+            params
+                .get("systemTime")
+                .and_then(Value::as_f64)
+                .is_some_and(|value| (1_000_000_000.0..10_000_000_000.0).contains(&value)),
+            "{}::{} missing unix-seconds systemTime",
+            step.domain,
+            step.name
+        );
+    }
+}

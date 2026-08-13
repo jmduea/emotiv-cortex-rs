@@ -1,0 +1,40 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly sweep so new advisories are caught without a code change.
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+  # Reusable so the release pipeline can require a green security run
+  # before publishing anything.
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-audit
+
+      - name: Audit Cargo.lock against the RustSec advisory database
+        run: cargo audit --deny warnings
+
+  deny:
+    name: cargo deny (advisories, bans, licenses, sources)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+
+      - name: Enforce deny.toml policy
+        run: cargo deny check

@@ -8,9 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CLIPPY_WARNINGS_V2_MAX: "0"
-  CLIPPY_WARNINGS_TUI_MAX: "0"
-  COVERAGE_MIN_LINES: "48"
 
 jobs:
   quality:
@@ -24,51 +21,33 @@ jobs:
       - name: Rustfmt check
         run: cargo fmt --all --check
 
-      - name: Clippy gate (v2 rustls + warning budget)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo clippy -p emotiv-cortex-v2 --lib \
-            --no-default-features --features rustls-tls,config-toml \
-            -- -D clippy::unwrap_used -D clippy::expect_used \
-            -D clippy::panic -D clippy::todo -D clippy::unimplemented \
-            2>&1 | tee clippy-v2.txt
+      - name: Clippy gate (library rustls, zero warnings)
+        run: >
+          cargo clippy -p neuroclient --lib
+          --no-default-features --features rustls-tls,config-toml
+          -- -D warnings
+          -D clippy::unwrap_used -D clippy::expect_used
+          -D clippy::panic -D clippy::todo -D clippy::unimplemented
 
-          warning_count=$(grep -cE '^warning(\[[^]]+\])?:' clippy-v2.txt || true)
-          echo "emotiv-cortex-v2 clippy warnings: ${warning_count} (budget: ${CLIPPY_WARNINGS_V2_MAX})"
-          if [ "${warning_count}" -gt "${CLIPPY_WARNINGS_V2_MAX}" ]; then
-            echo "clippy warning budget exceeded for emotiv-cortex-v2"
-            exit 1
-          fi
+      - name: Clippy gate (TUI no default features, zero warnings)
+        run: >
+          cargo clippy -p neuroclient-tui --bin neuroclient-tui
+          --no-default-features
+          -- -D warnings
+          -D clippy::unwrap_used -D clippy::expect_used
+          -D clippy::panic -D clippy::todo -D clippy::unimplemented
 
-      - name: Clippy gate (TUI no default features + warning budget)
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui \
-            --no-default-features \
-            -- -D clippy::unwrap_used -D clippy::expect_used \
-            -D clippy::panic -D clippy::todo -D clippy::unimplemented \
-            2>&1 | tee clippy-tui.txt
-
-          warning_count=$(grep -cE '^warning(\[[^]]+\])?:' clippy-tui.txt || true)
-          echo "emotiv-cortex-tui clippy warnings: ${warning_count} (budget: ${CLIPPY_WARNINGS_TUI_MAX})"
-          if [ "${warning_count}" -gt "${CLIPPY_WARNINGS_TUI_MAX}" ]; then
-            echo "clippy warning budget exceeded for emotiv-cortex-tui"
-            exit 1
-          fi
-
-      - name: Clippy pedantic report (v2 rustls)
+      - name: Clippy pedantic report (library rustls)
         continue-on-error: true
         run: >
-          cargo clippy -p emotiv-cortex-v2 --lib
+          cargo clippy -p neuroclient --lib
           --no-default-features --features rustls-tls,config-toml
           -- -W clippy::pedantic
 
       - name: Clippy pedantic report (TUI no default features)
         continue-on-error: true
         run: >
-          cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui
+          cargo clippy -p neuroclient-tui --bin neuroclient-tui
           --no-default-features
           -- -W clippy::pedantic
 
@@ -80,6 +59,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
+
+      - name: Load quality thresholds
+        run: grep -E '^[A-Z_]+=' ci/quality-thresholds.env >> "$GITHUB_ENV"
 
       - name: Coverage threshold (workspace line >= budget)
         env:
@@ -120,6 +102,32 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
 
+  msrv:
+    name: MSRV (library 1.85, TUI 1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.88"
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check neuroclient on Rust 1.85 (rustls)
+        run: >
+          cargo +1.85 check -p neuroclient
+          --no-default-features --features rustls-tls,config-toml
+
+      - name: Check neuroclient on Rust 1.85 (native-tls)
+        run: >
+          cargo +1.85 check -p neuroclient
+          --no-default-features --features native-tls,config-toml
+
+      - name: Check neuroclient-tui on Rust 1.88
+        run: cargo +1.88 check -p neuroclient-tui --no-default-features
+
   rustls-matrix:
     name: Rustls Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -132,23 +140,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check emotiv-cortex-v2 (rustls)
+      - name: Check neuroclient (rustls)
         run: >
-          cargo check -p emotiv-cortex-v2
+          cargo check -p neuroclient
           --no-default-features --features rustls-tls,config-toml
 
-      - name: Test emotiv-cortex-v2 (rustls)
+      - name: Test neuroclient (rustls)
         env:
           EMOTIV_SKIP_LIVE_TESTS: "1"
         run: >
-          cargo test -p emotiv-cortex-v2
+          cargo test -p neuroclient
           --no-default-features --features rustls-tls,config-toml
 
       - name: Check TUI (no default features)
-        run: cargo check -p emotiv-cortex-tui --no-default-features
+        run: cargo check -p neuroclient-tui --no-default-features
 
       - name: Test TUI (no default features)
-        run: cargo test -p emotiv-cortex-tui --no-default-features
+        run: cargo test -p neuroclient-tui --no-default-features
 
   native-tls:
     name: Native TLS (Linux)
@@ -158,16 +166,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check emotiv-cortex-v2 (native-tls)
+      - name: Check neuroclient (native-tls)
         run: >
-          cargo check -p emotiv-cortex-v2
+          cargo check -p neuroclient
           --no-default-features --features native-tls,config-toml
 
-      - name: Test emotiv-cortex-v2 (native-tls)
+      - name: Test neuroclient (native-tls)
         env:
           EMOTIV_SKIP_LIVE_TESTS: "1"
         run: >
-          cargo test -p emotiv-cortex-v2
+          cargo test -p neuroclient
           --no-default-features --features native-tls,config-toml
 
   docs:
@@ -178,38 +186,38 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Test emotiv-cortex-v2 docs
+      - name: Test neuroclient docs
         run: >
-          cargo test -p emotiv-cortex-v2 --doc
+          cargo test -p neuroclient --doc
           --no-default-features --features rustls-tls,config-toml
 
-      - name: Verify no ignored rustdoc examples in emotiv-cortex-v2 src
+      - name: Verify no ignored rustdoc examples in neuroclient src
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R -n '```ignore' crates/emotiv-cortex-v2/src; then
-            echo "Found rustdoc examples marked as ignore in crates/emotiv-cortex-v2/src."
+          if grep -R -n '```ignore' crates/neuroclient/src; then
+            echo "Found rustdoc examples marked as ignore in crates/neuroclient/src."
             exit 1
           fi
 
-      - name: Verify no ignored rustdoc examples in emotiv-cortex-tui src
+      - name: Verify no ignored rustdoc examples in neuroclient-tui src
         shell: bash
         run: |
           set -euo pipefail
-          if grep -R -n '```ignore' crates/emotiv-cortex-tui/src; then
-            echo "Found rustdoc examples marked as ignore in crates/emotiv-cortex-tui/src."
+          if grep -R -n '```ignore' crates/neuroclient-tui/src; then
+            echo "Found rustdoc examples marked as ignore in crates/neuroclient-tui/src."
             exit 1
           fi
 
-      - name: Build emotiv-cortex-v2 rustdoc with warnings denied
+      - name: Build neuroclient rustdoc with warnings denied
         run: >
-          cargo rustdoc -p emotiv-cortex-v2
+          cargo rustdoc -p neuroclient
           --no-default-features --features rustls-tls,config-toml
           -- -D warnings
 
-      - name: Build emotiv-cortex-tui rustdoc with warnings denied
+      - name: Build neuroclient-tui rustdoc with warnings denied
         run: >
-          cargo rustdoc -p emotiv-cortex-tui
+          cargo rustdoc -p neuroclient-tui
           --no-default-features
           -- -D warnings
 
@@ -220,9 +228,9 @@ jobs:
           {
             echo "## Documentation Gates"
             echo ""
-            echo "- \`emotiv-cortex-v2\` doctests: PASS"
-            echo "- \`emotiv-cortex-v2\` rustdoc warnings denied: PASS"
-            echo "- \`emotiv-cortex-tui\` rustdoc warnings denied: PASS"
+            echo "- \`neuroclient\` doctests: PASS"
+            echo "- \`neuroclient\` rustdoc warnings denied: PASS"
+            echo "- \`neuroclient-tui\` rustdoc warnings denied: PASS"
             echo "- rustdoc \`ignore\` snippet scan (both crates): PASS"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -235,10 +243,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Check TUI (LSL feature)
-        run: cargo check -p emotiv-cortex-tui --no-default-features --features lsl
+        run: cargo check -p neuroclient-tui --no-default-features --features lsl
 
       - name: Test TUI (LSL feature)
-        run: cargo test -p emotiv-cortex-tui --no-default-features --features lsl
+        run: cargo test -p neuroclient-tui --no-default-features --features lsl
 
   package:
     name: Package
@@ -248,8 +256,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Package emotiv-cortex-v2
-        run: cargo package -p emotiv-cortex-v2 --allow-dirty
+      - name: Package neuroclient
+        run: cargo package -p neuroclient --allow-dirty
 
-      - name: Package emotiv-cortex-tui (manifest/list check)
-        run: cargo package -p emotiv-cortex-tui --allow-dirty --list
+      - name: Package neuroclient-tui (manifest/list check)
+        run: cargo package -p neuroclient-tui --allow-dirty --list

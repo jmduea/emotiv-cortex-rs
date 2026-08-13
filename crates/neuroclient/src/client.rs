@@ -1,0 +1,3465 @@
+//! # Cortex WebSocket JSON-RPC Client
+//!
+//! Low-level transport for communicating with the Emotiv Cortex API.
+//! Handles WebSocket connection, TLS (self-signed cert for localhost),
+//! JSON-RPC request/response correlation, and the authentication flow.
+//!
+//! ## Architecture
+//!
+//! The WebSocket connection is split into reader/writer halves using
+//! `tokio-tungstenite`'s `StreamExt::split()`. This allows concurrent
+//! API calls and data streaming on the same WebSocket:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────┐
+//! │                 CortexClient                     │
+//! │                                                  │
+//! │  writer: Arc<Mutex<SplitSink>>  ◄── call()       │
+//! │                                  ◄── subscribe() │
+//! │                                                  │
+//! │  reader_loop (spawned task):                     │
+//! │    SplitStream ─┬─► RPC response → oneshot tx    │
+//! │                 ├─► eeg event    → eeg_tx        │
+//! │                 ├─► dev event    → dev_tx        │
+//! │                 ├─► mot event    → mot_tx        │
+//! │                 └─► pow event    → pow_tx        │
+//! └─────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## TLS Note
+//!
+//! The Emotiv Cortex service runs at `wss://localhost:6868` with a
+//! self-signed TLS certificate. TLS backend selection is feature-driven:
+//! `rustls-tls` (default) or `native-tls` (opt-in).
+//!
+//! ## Method Contract Template
+//!
+//! Public methods in this module document:
+//! - Cortex method name
+//! - required state (connection/auth/session)
+//! - parameter semantics
+//! - return shape and parsing behavior
+//! - error propagation and retry/idempotency notes
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use futures_util::{SinkExt, StreamExt, stream::SplitSink, stream::SplitStream};
+#[cfg(all(feature = "native-tls", not(feature = "rustls-tls")))]
+use native_tls::TlsConnector as NativeTlsConnector;
+#[cfg(feature = "rustls-tls")]
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+#[cfg(feature = "rustls-tls")]
+use rustls::{DigitallySignedStruct, Error as RustlsError, SignatureScheme};
+#[cfg(feature = "rustls-tls")]
+use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::error::TrySendError;
+use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::task::JoinHandle;
+#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+use tokio_tungstenite::connect_async_tls_with_config;
+#[cfg(not(any(feature = "native-tls", feature = "rustls-tls")))]
+use tokio_tungstenite::tungstenite::error::UrlError;
+use tokio_tungstenite::{
+    Connector, MaybeTlsStream, WebSocketStream,
+    tungstenite::{Message, http},
+};
+
+use crate::config::CortexConfig;
+use crate::error::{CortexError, CortexResult};
+use crate::protocol::auth::UserLoginInfo;
+use crate::protocol::constants::{Methods, Streams};
+use crate::protocol::headset::{
+    ConfigMappingListValue, ConfigMappingMode, ConfigMappingRequest, ConfigMappingResponse,
+    ConfigMappingValue, HeadsetClockSyncResult, HeadsetInfo, QueryHeadsetsOptions,
+};
+use crate::protocol::profiles::{CurrentProfileInfo, ProfileAction, ProfileInfo};
+use crate::protocol::records::{ExportFormat, MarkerInfo, RecordInfo, UpdateRecordRequest};
+use crate::protocol::rpc::{CortexRequest, CortexResponse};
+use crate::protocol::session::SessionInfo;
+use crate::protocol::streams::SubscribeResult;
+use crate::protocol::subjects::{
+    DemographicAttribute, QuerySubjectsRequest, SubjectInfo, SubjectRequest,
+};
+use crate::protocol::training::{
+    DetectionInfo, DetectionType, FacialExpressionSignatureTypeRequest,
+    FacialExpressionThresholdRequest, MentalCommandTrainingThresholdRequest,
+    TrainedSignatureActions, TrainingStatus, TrainingTime,
+};
+use crate::protocol::warnings::CortexWarning;
+
+/// Connection timeout for the initial WebSocket handshake.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Upper bound for each individual step of [`CortexClient::shutdown`]
+/// (writer close, reader join) so teardown can never hang.
+const SHUTDOWN_STEP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Channel buffer size for data stream events.
+const STREAM_CHANNEL_BUFFER: usize = 1024;
+
+type ConnectOutput = Result<
+    (
+        WebSocketStream<MaybeTlsStream<TcpStream>>,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    tokio_tungstenite::tungstenite::Error,
+>;
+
+#[cfg(any(feature = "native-tls", feature = "rustls-tls"))]
+fn connect_websocket(
+    uri: http::Uri,
+    connector: Option<Connector>,
+) -> impl std::future::Future<Output = ConnectOutput> {
+    connect_async_tls_with_config(
+        uri, None, // WebSocket config
+        true, // disable_nagle
+        connector,
+    )
+}
+
+#[cfg(not(any(feature = "native-tls", feature = "rustls-tls")))]
+async fn connect_websocket(_uri: http::Uri, _connector: Option<Connector>) -> ConnectOutput {
+    Err(tokio_tungstenite::tungstenite::Error::Url(
+        UrlError::TlsFeatureNotEnabled,
+    ))
+}
+
+#[cfg(all(feature = "native-tls", not(feature = "rustls-tls")))]
+fn build_tls_connector(config: &CortexConfig, url: &str) -> CortexResult<Option<Connector>> {
+    let tls_connector = NativeTlsConnector::builder()
+        .danger_accept_invalid_certs(config.should_accept_invalid_certs())
+        .build()
+        .map_err(|e| CortexError::ConnectionFailed {
+            url: url.to_string(),
+            reason: format!("TLS configuration failed: {}", e),
+        })?;
+
+    Ok(Some(Connector::NativeTls(tls_connector)))
+}
+
+#[cfg(all(feature = "rustls-tls", not(feature = "native-tls")))]
+fn build_tls_connector(config: &CortexConfig, url: &str) -> CortexResult<Option<Connector>> {
+    let _: http::Uri =
+        url.parse()
+            .map_err(|e: http::uri::InvalidUri| CortexError::ConnectionFailed {
+                url: url.to_string(),
+                reason: format!("Invalid URL: {e}"),
+            })?;
+
+    if !config.should_accept_invalid_certs() {
+        return Ok(None);
+    }
+
+    let tls_config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(InsecureCertVerifier))
+        .with_no_client_auth();
+
+    Ok(Some(Connector::Rustls(Arc::new(tls_config))))
+}
+
+#[cfg(any(
+    all(feature = "native-tls", feature = "rustls-tls"),
+    all(not(feature = "native-tls"), not(feature = "rustls-tls"))
+))]
+fn build_tls_connector(_config: &CortexConfig, url: &str) -> CortexResult<Option<Connector>> {
+    let _: http::Uri =
+        url.parse()
+            .map_err(|e: http::uri::InvalidUri| CortexError::ConnectionFailed {
+                url: url.to_string(),
+                reason: format!("Invalid URL: {e}"),
+            })?;
+    Ok(None)
+}
+
+#[cfg(feature = "rustls-tls")]
+#[derive(Debug)]
+struct InsecureCertVerifier;
+
+#[cfg(feature = "rustls-tls")]
+impl ServerCertVerifier for InsecureCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::ED25519,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA256,
+        ]
+    }
+}
+
+/// Type alias for the write half of the WebSocket connection.
+type WsWriter = SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>;
+
+/// Type alias for the read half of the WebSocket connection.
+type WsReader = SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>;
+
+/// A pending RPC response awaiting its matching JSON-RPC response by `id`.
+type PendingResponse = oneshot::Sender<CortexResult<serde_json::Value>>;
+
+/// Route key for stream dispatch: `(session_id, stream_key)`.
+///
+/// Cortex stream samples carry a `sid` field; routing on both the
+/// session and the stream name keeps concurrent sessions with the same
+/// stream types isolated from each other.
+pub type StreamRoute = (String, &'static str);
+
+/// Senders for dispatching stream data events to consumers, keyed by
+/// `(session_id, stream_key)`.
+pub type StreamSenders = HashMap<StreamRoute, mpsc::Sender<serde_json::Value>>;
+
+/// Receivers for consuming stream data events of one session, keyed by
+/// stream key.
+pub type StreamReceivers = HashMap<&'static str, mpsc::Receiver<serde_json::Value>>;
+
+/// Snapshot of stream dispatch behavior for one stream key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamDispatchStats {
+    /// Number of events successfully queued to the stream channel.
+    pub delivered: u64,
+    /// Number of events dropped because the channel was full.
+    pub dropped_full: u64,
+    /// Number of events dropped because the channel was closed.
+    pub dropped_closed: u64,
+}
+
+#[derive(Debug, Default)]
+struct StreamDispatchCounters {
+    delivered: AtomicU64,
+    dropped_full: AtomicU64,
+    dropped_closed: AtomicU64,
+}
+
+impl StreamDispatchCounters {
+    fn snapshot(&self) -> StreamDispatchStats {
+        StreamDispatchStats {
+            delivered: self.delivered.load(Ordering::Relaxed),
+            dropped_full: self.dropped_full.load(Ordering::Relaxed),
+            dropped_closed: self.dropped_closed.load(Ordering::Relaxed),
+        }
+    }
+}
+
+type StreamDispatchCounterMap = HashMap<StreamRoute, Arc<StreamDispatchCounters>>;
+
+/// Broadcast channel capacity for Cortex warning objects.
+const WARNING_CHANNEL_CAPACITY: usize = 64;
+
+/// WebSocket JSON-RPC client for the Emotiv Cortex API.
+///
+/// This client manages a single WebSocket connection, split into reader
+/// and writer halves. The writer is shared (behind `Arc<Mutex>`) so that
+/// API calls can be made concurrently with data streaming. The reader
+/// runs in a background task that dispatches:
+///
+/// - **RPC responses** → matched by `id` to pending `oneshot` channels
+/// - **Data events** → routed by stream type to `mpsc` channels
+pub struct CortexClient {
+    /// Shared write half of the WebSocket.
+    writer: Arc<Mutex<WsWriter>>,
+
+    /// Map of pending RPC requests awaiting responses, keyed by request ID.
+    pending_responses: Arc<Mutex<HashMap<u64, PendingResponse>>>,
+
+    /// Auto-incrementing request ID counter.
+    next_id: AtomicU64,
+
+    /// Handle to the background reader loop task.
+    ///
+    /// Behind a sync mutex so shutdown can take it through `&self`
+    /// (e.g. via an `Arc<CortexClient>` held by `ResilientClient`).
+    reader_handle: std::sync::Mutex<Option<JoinHandle<()>>>,
+
+    /// Whether the reader loop is currently running.
+    reader_running: Arc<AtomicBool>,
+
+    /// Shutdown signal for the reader loop.
+    reader_shutdown: tokio::sync::watch::Sender<bool>,
+
+    /// Shared stream senders, dynamically updatable without restarting
+    /// the reader loop. The reader holds a clone of this Arc and checks
+    /// it on each data message.
+    stream_senders: Arc<std::sync::Mutex<Option<StreamSenders>>>,
+
+    /// Per-stream dispatch counters for backpressure/drop observability.
+    stream_dispatch_counters: Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+
+    /// Broadcast channel for Cortex warning objects.
+    warning_tx: tokio::sync::broadcast::Sender<CortexWarning>,
+
+    /// RPC call timeout (from config).
+    rpc_timeout: Duration,
+
+    /// Monotonic clock origin used for `syncWithHeadsetClock`.
+    clock_origin: Instant,
+}
+
+/// Cancellation-safe ownership token for one locally reserved stream route.
+///
+/// Dropping an uncommitted reservation removes only the sender installed by
+/// that reservation. A warning or another cleanup path may remove the route
+/// and a later subscription may reuse the same key; sender identity prevents
+/// the stale guard from deleting that newer route.
+#[derive(Clone)]
+pub(crate) struct StreamRouteToken {
+    route: StreamRoute,
+    sender: mpsc::Sender<serde_json::Value>,
+}
+
+pub(crate) struct StreamRouteReservation<'a> {
+    client: &'a CortexClient,
+    token: StreamRouteToken,
+    committed: bool,
+}
+
+impl StreamRouteReservation<'_> {
+    /// Commit the route if this reservation still owns it.
+    #[must_use]
+    pub(crate) fn commit(mut self) -> bool {
+        if self.client.stream_route_matches(&self.token) {
+            self.committed = true;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+impl Drop for StreamRouteReservation<'_> {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.client.remove_stream_route_if_current(&self.token);
+        }
+    }
+}
+
+impl CortexClient {
+    /// Connect to the Cortex API WebSocket service.
+    ///
+    /// The Cortex service must be running on the local machine.
+    /// TLS is configured based on the [`CortexConfig`] settings.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use neuroclient::{CortexClient, CortexConfig};
+    ///
+    /// # async fn demo() -> neuroclient::CortexResult<()> {
+    /// let config = CortexConfig::discover(None)?;
+    /// let mut client = CortexClient::connect(&config).await?;
+    ///
+    /// let info = client.get_cortex_info().await?;
+    /// client.disconnect().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn connect(config: &CortexConfig) -> CortexResult<Self> {
+        let url = &config.cortex_url;
+        let rpc_timeout = Duration::from_secs(config.timeouts.rpc_timeout_secs);
+        let connector = build_tls_connector(config, url)?;
+
+        // Parse the WebSocket URL as a URI for the connection.
+        let uri: http::Uri =
+            url.parse()
+                .map_err(|e: http::uri::InvalidUri| CortexError::ConnectionFailed {
+                    url: url.clone(),
+                    reason: format!("Invalid URL: {e}"),
+                })?;
+
+        let connect_fut = connect_websocket(uri, connector);
+
+        let (ws, response) = tokio::time::timeout(CONNECT_TIMEOUT, connect_fut)
+            .await
+            .map_err(|_| CortexError::Timeout { seconds: 5 })?
+            .map_err(|e| CortexError::ConnectionFailed {
+                url: url.clone(),
+                reason: format!("WebSocket connection failed: {e}"),
+            })?;
+
+        tracing::info!(url, status = %response.status(), "Connected to Cortex API");
+
+        // Split the WebSocket into reader and writer halves.
+        let (writer, reader) = ws.split();
+
+        let pending_responses: Arc<Mutex<HashMap<u64, PendingResponse>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let reader_running = Arc::new(AtomicBool::new(true));
+        let (reader_shutdown, reader_shutdown_rx) = tokio::sync::watch::channel(false);
+        let stream_senders: Arc<std::sync::Mutex<Option<StreamSenders>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let stream_dispatch_counters: Arc<std::sync::Mutex<StreamDispatchCounterMap>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let (warning_tx, _) = tokio::sync::broadcast::channel(WARNING_CHANNEL_CAPACITY);
+
+        // Start the reader loop immediately — it needs to be running before
+        // any API calls so that responses can be dispatched.
+        let reader_handle = Self::spawn_reader_loop(
+            reader,
+            Arc::clone(&pending_responses),
+            Arc::clone(&reader_running),
+            Arc::clone(&stream_senders),
+            Arc::clone(&stream_dispatch_counters),
+            warning_tx.clone(),
+            reader_shutdown_rx,
+        );
+
+        Ok(Self {
+            writer: Arc::new(Mutex::new(writer)),
+            pending_responses,
+            next_id: AtomicU64::new(1),
+            reader_handle: std::sync::Mutex::new(Some(reader_handle)),
+            reader_running,
+            reader_shutdown,
+            stream_senders,
+            stream_dispatch_counters,
+            warning_tx,
+            rpc_timeout,
+            clock_origin: Instant::now(),
+        })
+    }
+
+    /// Connect to the Cortex API using just a URL (convenience for simple use cases).
+    ///
+    /// Uses default timeouts and localhost TLS settings.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn connect_url(url: &str) -> CortexResult<Self> {
+        let config = CortexConfig {
+            client_id: String::new(),
+            client_secret: String::new(),
+            cortex_url: url.to_string(),
+            ..CortexConfig::new("", "")
+        };
+        Self::connect(&config).await
+    }
+
+    /// Spawn the background reader loop that dispatches WebSocket messages.
+    fn spawn_reader_loop(
+        mut reader: WsReader,
+        pending_responses: Arc<Mutex<HashMap<u64, PendingResponse>>>,
+        running: Arc<AtomicBool>,
+        stream_senders: Arc<std::sync::Mutex<Option<StreamSenders>>>,
+        stream_dispatch_counters: Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+        warning_tx: tokio::sync::broadcast::Sender<CortexWarning>,
+        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    ) -> JoinHandle<()> {
+        tokio::spawn(async move {
+            while running.load(Ordering::SeqCst) {
+                let msg = tokio::select! {
+                    msg = reader.next() => msg,
+                    changed = shutdown_rx.changed() => {
+                        match changed {
+                            Ok(()) if *shutdown_rx.borrow() => break,
+                            Ok(()) => continue,
+                            Err(_) => break,
+                        }
+                    },
+                };
+
+                match msg {
+                    Some(Ok(Message::Text(text))) => {
+                        Self::handle_text_message(
+                            &text,
+                            &pending_responses,
+                            &stream_senders,
+                            &stream_dispatch_counters,
+                            &warning_tx,
+                        )
+                        .await;
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        tracing::info!("Cortex WebSocket closed by server");
+                        Self::drain_pending_connection_lost(
+                            &pending_responses,
+                            "Cortex WebSocket closed",
+                        )
+                        .await;
+                        break;
+                    }
+                    Some(Err(e)) => {
+                        tracing::warn!(error_category = "websocket_read", "WebSocket read failed");
+                        Self::drain_pending_websocket(
+                            &pending_responses,
+                            format!("WebSocket error: {e}"),
+                        )
+                        .await;
+                        break;
+                    }
+                    None => {
+                        tracing::info!("Cortex WebSocket stream ended");
+                        break;
+                    }
+                    _ => {
+                        // Binary messages, pings, pongs — skip
+                    }
+                }
+            }
+
+            Self::drain_pending_connection_lost(&pending_responses, "Reader loop stopped").await;
+
+            // Close all stream channels so receivers terminate instead of
+            // waiting forever on a dead connection.
+            if let Ok(mut guard) = stream_senders.lock() {
+                *guard = None;
+            }
+
+            tracing::debug!("Reader loop exiting");
+            running.store(false, Ordering::SeqCst);
+        })
+    }
+
+    async fn handle_text_message(
+        text: &str,
+        pending_responses: &Arc<Mutex<HashMap<u64, PendingResponse>>>,
+        stream_senders: &Arc<std::sync::Mutex<Option<StreamSenders>>>,
+        stream_dispatch_counters: &Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+        warning_tx: &tokio::sync::broadcast::Sender<CortexWarning>,
+    ) {
+        // SECURITY: never log the raw frame — it may contain tokens,
+        // credentials, or biosignal payloads. Metadata only.
+        tracing::debug!(bytes = text.len(), "Reader loop received message");
+
+        let value: serde_json::Value = match serde_json::from_str(text) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to parse WebSocket message as JSON: {}", e);
+                return;
+            }
+        };
+
+        // Warnings are dispatched before stream samples so that
+        // subscription-canceling warnings close routes promptly.
+        if value.get("warning").is_some() {
+            Self::dispatch_warning(&value, stream_senders, stream_dispatch_counters, warning_tx);
+            return;
+        }
+
+        if value
+            .get("id")
+            .and_then(serde_json::Value::as_u64)
+            .is_some()
+        {
+            let _ = Self::dispatch_rpc_response(value, pending_responses).await;
+            return;
+        }
+
+        Self::dispatch_stream_event(value, stream_senders, stream_dispatch_counters);
+    }
+
+    /// Parse and dispatch a Cortex warning object.
+    ///
+    /// Warnings with codes 0 (`STREAMS_AUTO_CANCELED`) and 1
+    /// (`SESSION_AUTO_CLOSED`) close the stream routes of the affected
+    /// session so consumers observe end-of-stream instead of a silent
+    /// stall. All warnings — known and unknown — are then broadcast to
+    /// [`warning_receiver`](Self::warning_receiver) subscribers.
+    fn dispatch_warning(
+        value: &serde_json::Value,
+        stream_senders: &Arc<std::sync::Mutex<Option<StreamSenders>>>,
+        stream_dispatch_counters: &Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+        warning_tx: &tokio::sync::broadcast::Sender<CortexWarning>,
+    ) {
+        let Some(warning_value) = value.get("warning") else {
+            return;
+        };
+
+        let Ok(warning) = serde_json::from_value::<CortexWarning>(warning_value.clone()) else {
+            tracing::warn!("Failed to parse Cortex warning object");
+            return;
+        };
+
+        tracing::info!(code = warning.code, "Received Cortex warning");
+
+        if warning.cancels_session_streams() {
+            if let Some(session_id) = warning.session_id() {
+                let removed = Self::remove_session_routes(
+                    stream_senders,
+                    stream_dispatch_counters,
+                    session_id,
+                );
+                if removed > 0 {
+                    tracing::info!(
+                        session_id,
+                        code = warning.code,
+                        removed,
+                        "Closed stream routes for canceled session"
+                    );
+                }
+            }
+        }
+
+        let _ = warning_tx.send(warning);
+    }
+
+    /// Remove all stream routes belonging to `session_id`, closing their
+    /// channels. Returns the number of routes removed.
+    fn remove_session_routes(
+        stream_senders: &Arc<std::sync::Mutex<Option<StreamSenders>>>,
+        stream_dispatch_counters: &Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+        session_id: &str,
+    ) -> usize {
+        let Ok(mut senders_guard) = stream_senders.lock() else {
+            return 0;
+        };
+        let Ok(mut counters) = stream_dispatch_counters.lock() else {
+            return 0;
+        };
+
+        let Some(senders) = senders_guard.as_mut() else {
+            return 0;
+        };
+        let before = senders.len();
+        senders.retain(|(sid, _), _| sid != session_id);
+        counters.retain(|(sid, _), _| sid != session_id);
+        before - senders.len()
+    }
+
+    async fn dispatch_rpc_response(
+        value: serde_json::Value,
+        pending_responses: &Arc<Mutex<HashMap<u64, PendingResponse>>>,
+    ) -> bool {
+        let Some(id) = value.get("id").and_then(serde_json::Value::as_u64) else {
+            return false;
+        };
+
+        let response: std::result::Result<CortexResponse, _> = serde_json::from_value(value);
+
+        let mut pending = pending_responses.lock().await;
+        if let Some(tx) = pending.remove(&id) {
+            match response {
+                Ok(resp) => {
+                    let result = if let Some(error) = resp.error {
+                        // SECURITY: log the code only; server error text can
+                        // echo request parameters. The full message is still
+                        // returned to the caller via `CortexError`.
+                        tracing::error!(id, code = error.code, "Cortex API error in RPC response");
+                        Err(CortexError::from_api_error(error.code, error.message))
+                    } else {
+                        resp.result.ok_or_else(|| CortexError::ProtocolError {
+                            reason: "Response has no result or error".into(),
+                        })
+                    };
+                    let _ = tx.send(result);
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(CortexError::ProtocolError {
+                        reason: format!("Failed to parse RPC response: {e}"),
+                    }));
+                }
+            }
+        } else {
+            tracing::debug!(id, "Received response for unknown request ID");
+        }
+
+        true
+    }
+
+    fn dispatch_stream_event(
+        value: serde_json::Value,
+        stream_senders: &Arc<std::sync::Mutex<Option<StreamSenders>>>,
+        stream_dispatch_counters: &Arc<std::sync::Mutex<StreamDispatchCounterMap>>,
+    ) {
+        // Cortex stream samples always carry the session id in `sid`.
+        // Routing requires both the session and the stream key so that
+        // concurrent sessions with the same stream types stay isolated.
+        let Some(sid) = value.get("sid").and_then(serde_json::Value::as_str) else {
+            tracing::debug!("Ignoring non-RPC message without 'sid'");
+            return;
+        };
+
+        let target_sender = if let Ok(guard) = stream_senders.lock() {
+            guard.as_ref().and_then(|senders| {
+                senders.iter().find_map(|((session_id, key), tx)| {
+                    (session_id == sid && value.get(*key).is_some())
+                        .then(|| ((session_id.clone(), *key), tx.clone()))
+                })
+            })
+        } else {
+            None
+        };
+
+        if let Some((route, tx)) = target_sender {
+            let counter = stream_dispatch_counters
+                .lock()
+                .ok()
+                .and_then(|counters| counters.get(&route).cloned());
+
+            match tx.try_send(value) {
+                Ok(()) => {
+                    if let Some(counter) = counter {
+                        counter.delivered.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Err(TrySendError::Full(_)) => {
+                    if let Some(counter) = counter {
+                        counter.dropped_full.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Err(TrySendError::Closed(_)) => {
+                    if let Some(counter) = counter {
+                        counter.dropped_closed.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+
+    async fn drain_pending_connection_lost(
+        pending_responses: &Arc<Mutex<HashMap<u64, PendingResponse>>>,
+        reason: &str,
+    ) {
+        let mut pending = pending_responses.lock().await;
+        for (_, tx) in pending.drain() {
+            let _ = tx.send(Err(CortexError::ConnectionLost {
+                reason: reason.to_string(),
+            }));
+        }
+    }
+
+    async fn drain_pending_websocket(
+        pending_responses: &Arc<Mutex<HashMap<u64, PendingResponse>>>,
+        reason: String,
+    ) {
+        let mut pending = pending_responses.lock().await;
+        for (_, tx) in pending.drain() {
+            let _ = tx.send(Err(CortexError::WebSocket(reason.clone())));
+        }
+    }
+
+    // ─── Core RPC ───────────────────────────────────────────────────────
+
+    /// Send a JSON-RPC request and wait for the matching response.
+    async fn call(
+        &self,
+        method: &'static str,
+        params: serde_json::Value,
+    ) -> CortexResult<serde_json::Value> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request = CortexRequest::new(id, method, params);
+
+        let json = serde_json::to_string(&request).map_err(|e| CortexError::ProtocolError {
+            reason: format!("serialize error: {e}"),
+        })?;
+
+        // SECURITY: never log the request body — params may contain
+        // clientSecret, cortexToken, or license values. Metadata only.
+        tracing::debug!(method, id, bytes = json.len(), "Sending Cortex request");
+
+        // Register the pending response before sending
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.pending_responses.lock().await;
+            pending.insert(id, tx);
+        }
+
+        // Send the request via the shared writer
+        let send_result = {
+            let mut writer = self.writer.lock().await;
+            writer.send(Message::Text(json.into())).await
+        };
+        if let Err(e) = send_result {
+            let mut pending = self.pending_responses.lock().await;
+            pending.remove(&id);
+            return Err(CortexError::WebSocket(format!("Send error: {e}")));
+        }
+
+        // Wait for the reader loop to deliver the response
+        let timeout_secs = self.rpc_timeout.as_secs();
+        let result = match tokio::time::timeout(self.rpc_timeout, rx).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => {
+                return Err(CortexError::ConnectionLost {
+                    reason: "Response channel dropped (reader loop died)".into(),
+                });
+            }
+            Err(_) => {
+                self.pending_responses.lock().await.remove(&id);
+                return Err(CortexError::Timeout {
+                    seconds: timeout_secs,
+                });
+            }
+        }?;
+
+        tracing::debug!(method, id, "Cortex RPC succeeded");
+        Ok(result)
+    }
+
+    fn query_headsets_params(options: QueryHeadsetsOptions) -> serde_json::Value {
+        let mut params = serde_json::json!({});
+        if let Some(id) = options.id {
+            params["id"] = serde_json::json!(id);
+        }
+        if options.include_flex_mappings {
+            params["includeFlexMappings"] = serde_json::json!(true);
+        }
+        params
+    }
+
+    fn sync_with_headset_clock_params(&self, headset_id: &str) -> CortexResult<serde_json::Value> {
+        let monotonic_time = self.clock_origin.elapsed().as_secs_f64();
+        let system_time = Self::current_epoch_seconds()?;
+
+        Ok(Self::sync_with_headset_clock_params_with_times(
+            headset_id,
+            monotonic_time,
+            system_time,
+        ))
+    }
+
+    fn current_epoch_seconds() -> CortexResult<f64> {
+        let system_duration = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
+            CortexError::ProtocolError {
+                reason: format!("System clock is before UNIX epoch: {e}"),
+            }
+        })?;
+
+        Ok(system_duration.as_secs_f64())
+    }
+
+    fn current_epoch_millis() -> CortexResult<u64> {
+        let system_duration = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| {
+            CortexError::ProtocolError {
+                reason: format!("System clock is before UNIX epoch: {e}"),
+            }
+        })?;
+
+        u64::try_from(system_duration.as_millis()).map_err(|_| CortexError::ProtocolError {
+            reason: "System time in milliseconds exceeds u64 range".into(),
+        })
+    }
+
+    fn sync_with_headset_clock_params_with_times(
+        headset_id: &str,
+        monotonic_time: f64,
+        system_time: f64,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "headset": headset_id,
+            "monotonicTime": monotonic_time,
+            "systemTime": system_time,
+        })
+    }
+
+    fn update_headset_params(
+        cortex_token: &str,
+        headset_id: &str,
+        setting: &serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "cortexToken": cortex_token,
+            "headsetId": headset_id,
+            "setting": setting,
+        })
+    }
+
+    fn config_mapping_params(
+        cortex_token: &str,
+        request: ConfigMappingRequest,
+    ) -> CortexResult<(ConfigMappingMode, serde_json::Value)> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": request.mode().as_str(),
+        });
+
+        match request {
+            ConfigMappingRequest::Create { name, mappings } => {
+                if name.trim().is_empty() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping create requires non-empty name".into(),
+                    });
+                }
+                if !mappings.is_object() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping create requires mappings as an object".into(),
+                    });
+                }
+                params["name"] = serde_json::json!(name);
+                params["mappings"] = mappings;
+                Ok((ConfigMappingMode::Create, params))
+            }
+            ConfigMappingRequest::Get => Ok((ConfigMappingMode::Get, params)),
+            ConfigMappingRequest::Read { uuid } => {
+                if uuid.trim().is_empty() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping read requires non-empty uuid".into(),
+                    });
+                }
+                params["uuid"] = serde_json::json!(uuid);
+                Ok((ConfigMappingMode::Read, params))
+            }
+            ConfigMappingRequest::Update {
+                uuid,
+                name,
+                mappings,
+            } => {
+                if uuid.trim().is_empty() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping update requires non-empty uuid".into(),
+                    });
+                }
+                if name.is_none() && mappings.is_none() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping update requires name and/or mappings".into(),
+                    });
+                }
+                if mappings.as_ref().is_some_and(|m| !m.is_object()) {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping update requires mappings as an object".into(),
+                    });
+                }
+
+                params["uuid"] = serde_json::json!(uuid);
+                if let Some(value) = name {
+                    if value.trim().is_empty() {
+                        return Err(CortexError::ProtocolError {
+                            reason: "configMapping update name must be non-empty".into(),
+                        });
+                    }
+                    params["name"] = serde_json::json!(value);
+                }
+                if let Some(value) = mappings {
+                    params["mappings"] = value;
+                }
+                Ok((ConfigMappingMode::Update, params))
+            }
+            ConfigMappingRequest::Delete { uuid } => {
+                if uuid.trim().is_empty() {
+                    return Err(CortexError::ProtocolError {
+                        reason: "configMapping delete requires non-empty uuid".into(),
+                    });
+                }
+                params["uuid"] = serde_json::json!(uuid);
+                Ok((ConfigMappingMode::Delete, params))
+            }
+        }
+    }
+
+    fn update_headset_custom_info_params(
+        cortex_token: &str,
+        headset_id: &str,
+        headband_position: Option<&str>,
+        custom_name: Option<&str>,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "headsetId": headset_id,
+        });
+
+        if let Some(pos) = headband_position {
+            params["headbandPosition"] = serde_json::json!(pos);
+        }
+        if let Some(name) = custom_name {
+            params["customName"] = serde_json::json!(name);
+        }
+        params
+    }
+
+    fn mental_command_training_threshold_params(
+        cortex_token: &str,
+        session_id: Option<&str>,
+        profile: Option<&str>,
+        status: Option<&str>,
+        value: Option<f64>,
+    ) -> CortexResult<serde_json::Value> {
+        match (session_id, profile) {
+            (Some(_), Some(_)) => {
+                return Err(CortexError::ProtocolError {
+                    reason: "Specify either session_id or profile, not both".into(),
+                });
+            }
+            (None, None) => {
+                return Err(CortexError::ProtocolError {
+                    reason: "Specify either session_id or profile".into(),
+                });
+            }
+            _ => {}
+        }
+
+        let inferred_status = status.unwrap_or(if value.is_some() { "set" } else { "get" });
+
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": inferred_status,
+        });
+
+        if let Some(session) = session_id {
+            params["session"] = serde_json::json!(session);
+        }
+        if let Some(profile_name) = profile {
+            params["profile"] = serde_json::json!(profile_name);
+        }
+        if let Some(threshold) = value {
+            params["value"] = serde_json::json!(threshold);
+        }
+        Ok(params)
+    }
+
+    fn subject_params(cortex_token: &str, request: &SubjectRequest) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "subjectName": request.subject_name.as_str(),
+        });
+
+        if let Some(dob) = &request.date_of_birth {
+            params["dateOfBirth"] = serde_json::json!(dob);
+        }
+        if let Some(sex) = &request.sex {
+            params["sex"] = serde_json::json!(sex);
+        }
+        if let Some(country_code) = &request.country_code {
+            params["countryCode"] = serde_json::json!(country_code);
+        }
+        if let Some(state) = &request.state {
+            params["state"] = serde_json::json!(state);
+        }
+        if let Some(city) = &request.city {
+            params["city"] = serde_json::json!(city);
+        }
+        if let Some(attributes) = &request.attributes {
+            params["attributes"] = serde_json::json!(attributes);
+        }
+
+        params
+    }
+
+    fn query_subjects_params(
+        cortex_token: &str,
+        request: &QuerySubjectsRequest,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "query": request.query.clone(),
+            "orderBy": request.order_by.clone(),
+        });
+
+        if let Some(limit) = request.limit {
+            params["limit"] = serde_json::json!(limit);
+        }
+        if let Some(offset) = request.offset {
+            params["offset"] = serde_json::json!(offset);
+        }
+
+        params
+    }
+
+    fn facial_expression_signature_type_params(
+        cortex_token: &str,
+        request: &FacialExpressionSignatureTypeRequest,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": request.status.as_str(),
+        });
+
+        if let Some(profile) = &request.profile {
+            params["profile"] = serde_json::json!(profile);
+        }
+        if let Some(session) = &request.session {
+            params["session"] = serde_json::json!(session);
+        }
+        if let Some(signature) = &request.signature {
+            params["signature"] = serde_json::json!(signature);
+        }
+
+        params
+    }
+
+    fn facial_expression_threshold_params(
+        cortex_token: &str,
+        request: &FacialExpressionThresholdRequest,
+    ) -> serde_json::Value {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": request.status.as_str(),
+            "action": request.action.as_str(),
+        });
+
+        if let Some(profile) = &request.profile {
+            params["profile"] = serde_json::json!(profile);
+        }
+        if let Some(session) = &request.session {
+            params["session"] = serde_json::json!(session);
+        }
+        if let Some(value) = request.value {
+            params["value"] = serde_json::json!(value);
+        }
+
+        params
+    }
+
+    // ─── Streaming ──────────────────────────────────────────────────────
+
+    /// Stream name validation and mapping to static keys.
+    fn stream_key(name: &str) -> &'static str {
+        match name {
+            Streams::EEG => "eeg",
+            Streams::DEV => "dev",
+            Streams::MOT => "mot",
+            Streams::EQ => "eq",
+            Streams::POW => "pow",
+            Streams::MET => "met",
+            Streams::COM => "com",
+            Streams::FAC => "fac",
+            Streams::SYS => "sys",
+            other => {
+                tracing::warn!(stream = other, "Unknown stream type");
+                "unknown"
+            }
+        }
+    }
+
+    /// Create data stream channels for the specified streams of one session.
+    ///
+    /// Routes are added atomically without disturbing other sessions. If any
+    /// requested `(session_id, stream)` route already exists, no routes are
+    /// added.
+    ///
+    /// # Errors
+    /// Returns [`CortexError::StreamError`] for duplicate routes, or
+    /// [`CortexError::ProtocolError`] if a route registry lock is poisoned.
+    pub fn create_stream_channels(
+        &self,
+        session_id: &str,
+        streams: &[&str],
+    ) -> CortexResult<StreamReceivers> {
+        let mut pending = Vec::with_capacity(streams.len());
+        let mut receivers = StreamReceivers::new();
+
+        for &stream in streams {
+            let stream_key = Self::stream_key(stream);
+            let route: StreamRoute = (session_id.to_string(), stream_key);
+            let (tx, rx) = mpsc::channel(STREAM_CHANNEL_BUFFER);
+            if pending
+                .iter()
+                .any(|(pending_route, _, _, _)| pending_route == &route)
+            {
+                return Err(CortexError::StreamError {
+                    reason: format!(
+                        "stream '{stream}' is requested more than once for session '{session_id}'"
+                    ),
+                });
+            }
+            pending.push((route, stream_key, tx, rx));
+        }
+
+        let mut senders_guard =
+            self.stream_senders
+                .lock()
+                .map_err(|_| CortexError::ProtocolError {
+                    reason: "stream route registry lock poisoned".into(),
+                })?;
+        let mut counters =
+            self.stream_dispatch_counters
+                .lock()
+                .map_err(|_| CortexError::ProtocolError {
+                    reason: "stream dispatch counter registry lock poisoned".into(),
+                })?;
+        let senders = senders_guard.get_or_insert_with(StreamSenders::new);
+
+        if let Some((route, _, _, _)) = pending
+            .iter()
+            .find(|(route, _, _, _)| senders.contains_key(route))
+        {
+            return Err(CortexError::StreamError {
+                reason: format!(
+                    "a local route for stream '{}' in session '{}' already exists",
+                    route.1, route.0
+                ),
+            });
+        }
+
+        for (route, stream_key, tx, rx) in pending {
+            senders.insert(route.clone(), tx);
+            counters.insert(route, Arc::new(StreamDispatchCounters::default()));
+            receivers.insert(stream_key, rx);
+        }
+
+        Ok(receivers)
+    }
+
+    /// Add a single stream channel for one session without disturbing
+    /// existing routes.
+    ///
+    /// Returns a receiver for the new channel.
+    ///
+    /// # Errors
+    /// Returns [`CortexError::StreamError`] if a route for
+    /// `(session_id, stream)` already exists — replacing it would
+    /// silently disconnect the previous receiver.
+    pub fn add_stream_channel(
+        &self,
+        session_id: &str,
+        stream: &str,
+    ) -> CortexResult<mpsc::Receiver<serde_json::Value>> {
+        self.insert_stream_channel(session_id, stream)
+            .map(|(rx, _, _)| rx)
+    }
+
+    /// Reserve a stream route that is automatically rolled back unless
+    /// committed after a confirmed subscription response.
+    pub(crate) fn reserve_stream_channel(
+        &self,
+        session_id: &str,
+        stream: &str,
+    ) -> CortexResult<(
+        mpsc::Receiver<serde_json::Value>,
+        StreamRouteReservation<'_>,
+    )> {
+        let (rx, route, sender) = self.insert_stream_channel(session_id, stream)?;
+        Ok((
+            rx,
+            StreamRouteReservation {
+                client: self,
+                token: StreamRouteToken { route, sender },
+                committed: false,
+            },
+        ))
+    }
+
+    fn insert_stream_channel(
+        &self,
+        session_id: &str,
+        stream: &str,
+    ) -> CortexResult<(
+        mpsc::Receiver<serde_json::Value>,
+        StreamRoute,
+        mpsc::Sender<serde_json::Value>,
+    )> {
+        let stream_key = Self::stream_key(stream);
+        let route: StreamRoute = (session_id.to_string(), stream_key);
+        let (tx, rx) = mpsc::channel(STREAM_CHANNEL_BUFFER);
+
+        let mut senders_guard =
+            self.stream_senders
+                .lock()
+                .map_err(|_| CortexError::ProtocolError {
+                    reason: "stream route registry lock poisoned".into(),
+                })?;
+        let mut counters =
+            self.stream_dispatch_counters
+                .lock()
+                .map_err(|_| CortexError::ProtocolError {
+                    reason: "stream dispatch counter registry lock poisoned".into(),
+                })?;
+        let senders = senders_guard.get_or_insert_with(StreamSenders::new);
+        if senders.contains_key(&route) {
+            return Err(CortexError::StreamError {
+                reason: format!(
+                    "a local route for stream '{stream}' in session '{session_id}' already \
+                     exists; unsubscribe or remove it before subscribing again"
+                ),
+            });
+        }
+        senders.insert(route.clone(), tx.clone());
+        counters.insert(route.clone(), Arc::new(StreamDispatchCounters::default()));
+        Ok((rx, route, tx))
+    }
+
+    /// Remove a single stream channel sender for one session.
+    pub fn remove_stream_channel(&self, session_id: &str, stream: &str) {
+        let stream_key = Self::stream_key(stream);
+        let route: StreamRoute = (session_id.to_string(), stream_key);
+        let Ok(mut senders_guard) = self.stream_senders.lock() else {
+            return;
+        };
+        let Ok(mut counters) = self.stream_dispatch_counters.lock() else {
+            return;
+        };
+        if let Some(ref mut senders) = *senders_guard {
+            senders.remove(&route);
+        }
+        counters.remove(&route);
+    }
+
+    pub(crate) fn stream_route_token(
+        &self,
+        session_id: &str,
+        stream: &str,
+    ) -> Option<StreamRouteToken> {
+        let route = (session_id.to_string(), Self::stream_key(stream));
+        self.stream_senders
+            .lock()
+            .ok()
+            .and_then(|guard| guard.as_ref()?.get(&route).cloned())
+            .map(|sender| StreamRouteToken { route, sender })
+    }
+
+    fn stream_route_matches(&self, token: &StreamRouteToken) -> bool {
+        self.stream_senders
+            .lock()
+            .ok()
+            .and_then(|guard| {
+                guard
+                    .as_ref()
+                    .and_then(|senders| senders.get(&token.route))
+                    .map(|current| current.same_channel(&token.sender))
+            })
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn remove_stream_route_if_current(&self, token: &StreamRouteToken) -> bool {
+        let Ok(mut senders_guard) = self.stream_senders.lock() else {
+            return false;
+        };
+        let Ok(mut counters) = self.stream_dispatch_counters.lock() else {
+            return false;
+        };
+        let Some(senders) = senders_guard.as_mut() else {
+            return false;
+        };
+        if senders
+            .get(&token.route)
+            .is_some_and(|current| current.same_channel(&token.sender))
+        {
+            senders.remove(&token.route);
+            counters.remove(&token.route);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove all stream channels belonging to one session, closing
+    /// their receivers.
+    pub fn remove_session_channels(&self, session_id: &str) {
+        Self::remove_session_routes(
+            &self.stream_senders,
+            &self.stream_dispatch_counters,
+            session_id,
+        );
+    }
+
+    /// Clear all stream senders (all sessions).
+    pub fn clear_stream_channels(&self) {
+        if let Ok(mut guard) = self.stream_senders.lock() {
+            *guard = None;
+        }
+        if let Ok(mut counters) = self.stream_dispatch_counters.lock() {
+            counters.clear();
+        }
+    }
+
+    /// Returns the current stream dispatch stats keyed by
+    /// `(session_id, stream_key)`.
+    pub fn stream_dispatch_stats(&self) -> HashMap<StreamRoute, StreamDispatchStats> {
+        if let Ok(counters) = self.stream_dispatch_counters.lock() {
+            counters
+                .iter()
+                .map(|(route, counter)| (route.clone(), counter.snapshot()))
+                .collect()
+        } else {
+            HashMap::new()
+        }
+    }
+
+    /// Subscribe to Cortex warning objects (see [`CortexWarning`]).
+    ///
+    /// All warnings are broadcast, including unknown/future codes.
+    /// Session-canceling warnings (codes 0 and 1) additionally close the
+    /// affected session's stream channels before being broadcast.
+    pub fn warning_receiver(&self) -> tokio::sync::broadcast::Receiver<CortexWarning> {
+        self.warning_tx.subscribe()
+    }
+
+    /// Returns the number of currently pending RPC responses.
+    pub async fn pending_response_count(&self) -> usize {
+        self.pending_responses.lock().await.len()
+    }
+
+    // ─── Authentication ─────────────────────────────────────────────────
+
+    /// Query Cortex service version and build info.
+    ///
+    /// No authentication required. Useful as a health check.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_cortex_info(&self) -> CortexResult<serde_json::Value> {
+        self.call(Methods::GET_CORTEX_INFO, serde_json::json!({}))
+            .await
+    }
+
+    /// Check if the application has been granted access rights.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn has_access_right(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+    ) -> CortexResult<bool> {
+        let result = self
+            .call(
+                Methods::HAS_ACCESS_RIGHT,
+                serde_json::json!({
+                    "clientId": client_id,
+                    "clientSecret": client_secret,
+                }),
+            )
+            .await?;
+
+        Ok(result
+            .get("accessGranted")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
+    }
+
+    /// Get the currently logged-in Emotiv user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_user_login(&self) -> CortexResult<Vec<UserLoginInfo>> {
+        let result = self
+            .call(Methods::GET_USER_LOGIN, serde_json::json!({}))
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse user login info: {e}"),
+        })
+    }
+
+    /// Authenticate with the Cortex API.
+    ///
+    /// Performs: `getCortexInfo` → `requestAccess` → `authorize`.
+    ///
+    /// Returns the cortex token needed for all subsequent operations.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn authenticate(&self, client_id: &str, client_secret: &str) -> CortexResult<String> {
+        // Step 0: getCortexInfo — verify API is alive
+        let cortex_info_ok = match self.get_cortex_info().await {
+            Ok(_) => {
+                tracing::info!("Cortex API reachable (getCortexInfo succeeded)");
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error_category = e.category(),
+                    api_code = ?e.api_code(),
+                    "getCortexInfo failed; continuing authentication"
+                );
+                false
+            }
+        };
+
+        // Step 1: requestAccess — gracefully skip if method doesn't exist
+        match self
+            .call(
+                Methods::REQUEST_ACCESS,
+                serde_json::json!({
+                    "clientId": client_id,
+                    "clientSecret": client_secret,
+                }),
+            )
+            .await
+        {
+            Ok(_) => tracing::debug!("Cortex access requested"),
+            Err(CortexError::MethodNotFound { .. }) => {
+                tracing::info!(
+                    "requestAccess not available on this Cortex version \
+                     (Launcher handles app approval directly)"
+                );
+            }
+            Err(e) => return Err(e),
+        }
+
+        // Step 2: authorize and get a cortex token
+        let auth_result = match self
+            .call(
+                Methods::AUTHORIZE,
+                serde_json::json!({
+                    "clientId": client_id,
+                    "clientSecret": client_secret,
+                }),
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(CortexError::MethodNotFound { .. }) => {
+                if !cortex_info_ok {
+                    tracing::error!(
+                        "Both getCortexInfo and authorize returned 'Method not found'. \
+                         The service may not be the Emotiv Cortex API, or may be incompatible."
+                    );
+                }
+                return Err(CortexError::AuthenticationFailed {
+                    reason: "Cortex API 'authorize' method not found (-32601). \
+                             Check that the EMOTIV Launcher is running and you are logged in."
+                        .into(),
+                });
+            }
+            Err(e) => return Err(e),
+        };
+
+        let cortex_token = auth_result
+            .get("cortexToken")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CortexError::ProtocolError {
+                reason: "authorize response missing cortexToken".into(),
+            })?
+            .to_string();
+
+        tracing::info!("Cortex authentication successful");
+
+        Ok(cortex_token)
+    }
+
+    /// Generate a new cortex token (or refresh an existing one).
+    ///
+    /// Can be used to obtain a fresh token without the full `requestAccess` → `authorize` flow.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn generate_new_token(
+        &self,
+        cortex_token: &str,
+        client_id: &str,
+        client_secret: &str,
+    ) -> CortexResult<String> {
+        let result = self
+            .call(
+                Methods::GENERATE_NEW_TOKEN,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "clientId": client_id,
+                    "clientSecret": client_secret,
+                }),
+            )
+            .await?;
+
+        result
+            .get("cortexToken")
+            .and_then(|v| v.as_str())
+            .map(std::string::ToString::to_string)
+            .ok_or_else(|| CortexError::ProtocolError {
+                reason: "generateNewToken response missing cortexToken".into(),
+            })
+    }
+
+    /// Get information about the current user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_user_info(&self, cortex_token: &str) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::GET_USER_INFO,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+            }),
+        )
+        .await
+    }
+
+    /// Get information about the license used by the application.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_license_info(&self, cortex_token: &str) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::GET_LICENSE_INFO,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+            }),
+        )
+        .await
+    }
+
+    // ─── Headset Management ─────────────────────────────────────────────
+
+    /// Query available headsets.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn query_headsets(
+        &self,
+        options: QueryHeadsetsOptions,
+    ) -> CortexResult<Vec<HeadsetInfo>> {
+        let result = self
+            .call(
+                Methods::QUERY_HEADSETS,
+                Self::query_headsets_params(options),
+            )
+            .await?;
+
+        let headsets: Vec<HeadsetInfo> =
+            serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse headset list: {e}"),
+            })?;
+
+        tracing::info!(count = headsets.len(), "Queried headsets");
+
+        Ok(headsets)
+    }
+
+    /// Connect to a specific headset via the Cortex service.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn connect_headset(&self, headset_id: &str) -> CortexResult<()> {
+        self.call(
+            Methods::CONTROL_DEVICE,
+            serde_json::json!({
+                "command": "connect",
+                "headset": headset_id,
+            }),
+        )
+        .await?;
+
+        tracing::info!(headset = headset_id, "Headset connection initiated");
+        Ok(())
+    }
+
+    /// Disconnect a headset from the Cortex service.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn disconnect_headset(&self, headset_id: &str) -> CortexResult<()> {
+        self.call(
+            Methods::CONTROL_DEVICE,
+            serde_json::json!({
+                "command": "disconnect",
+                "headset": headset_id,
+            }),
+        )
+        .await?;
+
+        tracing::info!(headset = headset_id, "Headset disconnection initiated");
+        Ok(())
+    }
+
+    /// Trigger headset scanning / refresh.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn refresh_headsets(&self) -> CortexResult<()> {
+        self.call(
+            Methods::CONTROL_DEVICE,
+            serde_json::json!({
+                "command": "refresh",
+            }),
+        )
+        .await?;
+
+        tracing::debug!("Headset refresh/scan triggered");
+        Ok(())
+    }
+
+    /// Synchronize the system clock with the headset clock.
+    ///
+    /// Cortex method: `syncWithHeadsetClock`
+    /// Required state: reachable headset.
+    /// Parameters: `headset_id`.
+    /// Returns: typed clock sync details from Cortex.
+    /// Errors: session/headset/transport errors from Cortex are propagated.
+    /// Related methods: [`Self::query_headsets`], [`Self::connect_headset`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn sync_with_headset_clock(
+        &self,
+        headset_id: &str,
+    ) -> CortexResult<HeadsetClockSyncResult> {
+        let result = self
+            .call(
+                Methods::SYNC_WITH_HEADSET_CLOCK,
+                self.sync_with_headset_clock_params(headset_id)?,
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse headset clock sync result: {e}"),
+        })
+    }
+
+    /// Manage EEG channel mapping configurations for an EPOC Flex headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn config_mapping(
+        &self,
+        cortex_token: &str,
+        request: ConfigMappingRequest,
+    ) -> CortexResult<ConfigMappingResponse> {
+        let (mode, params) = Self::config_mapping_params(cortex_token, request)?;
+        let result = self.call(Methods::CONFIG_MAPPING, params).await?;
+
+        match mode {
+            ConfigMappingMode::Create | ConfigMappingMode::Read | ConfigMappingMode::Update => {
+                #[derive(serde::Deserialize)]
+                struct ValueEnvelope {
+                    message: String,
+                    value: ConfigMappingValue,
+                }
+                let parsed: ValueEnvelope =
+                    serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                        reason: format!("Failed to parse configMapping value response: {e}"),
+                    })?;
+                Ok(ConfigMappingResponse::Value {
+                    message: parsed.message,
+                    value: parsed.value,
+                })
+            }
+            ConfigMappingMode::Get => {
+                #[derive(serde::Deserialize)]
+                struct ListEnvelope {
+                    message: String,
+                    value: ConfigMappingListValue,
+                }
+                let parsed: ListEnvelope =
+                    serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                        reason: format!("Failed to parse configMapping get response: {e}"),
+                    })?;
+                Ok(ConfigMappingResponse::List {
+                    message: parsed.message,
+                    value: parsed.value,
+                })
+            }
+            ConfigMappingMode::Delete => {
+                #[derive(serde::Deserialize)]
+                struct DeleteEnvelope {
+                    message: String,
+                    uuid: String,
+                }
+                let parsed: DeleteEnvelope =
+                    serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                        reason: format!("Failed to parse configMapping delete response: {e}"),
+                    })?;
+                Ok(ConfigMappingResponse::Deleted {
+                    message: parsed.message,
+                    uuid: parsed.uuid,
+                })
+            }
+        }
+    }
+
+    /// Update settings of an EPOC+ or EPOC X headset.
+    ///
+    /// Cortex method: `updateHeadset`
+    /// Required state: authenticated token.
+    /// Parameters:
+    ///
+    /// - `headset_id`: headset identifier
+    /// - `setting`: device-specific JSON object (for example:
+    ///   `{"mode": "EPOC", "eegRate": 256, "memsRate": 64}`)
+    ///
+    /// Returns: raw JSON-RPC result payload from Cortex.
+    /// Errors: validation/headset/license/auth errors are propagated.
+    /// Retry/idempotency: safe to retry when the same `setting` is reused.
+    /// Related methods: [`Self::update_headset_custom_info`], [`Self::query_headsets`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn update_headset(
+        &self,
+        cortex_token: &str,
+        headset_id: &str,
+        setting: serde_json::Value,
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::UPDATE_HEADSET,
+            Self::update_headset_params(cortex_token, headset_id, &setting),
+        )
+        .await
+    }
+
+    /// Update the headband position or custom name of an EPOC X headset.
+    ///
+    /// Cortex method: `updateHeadsetCustomInfo`
+    /// Required state: authenticated token.
+    /// Parameters:
+    ///
+    /// - `headset_id`: headset identifier
+    /// - `headband_position`: optional position string
+    /// - `custom_name`: optional display name
+    ///
+    /// Returns: raw JSON-RPC result payload from Cortex.
+    /// Errors: validation/headset/auth errors are propagated.
+    /// Related methods: [`Self::update_headset`], [`Self::query_headsets`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn update_headset_custom_info(
+        &self,
+        cortex_token: &str,
+        headset_id: &str,
+        headband_position: Option<&str>,
+        custom_name: Option<&str>,
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::UPDATE_HEADSET_CUSTOM_INFO,
+            Self::update_headset_custom_info_params(
+                cortex_token,
+                headset_id,
+                headband_position,
+                custom_name,
+            ),
+        )
+        .await
+    }
+
+    // ─── Session Management ─────────────────────────────────────────────
+
+    /// Create a session for a headset.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn create_session(
+        &self,
+        cortex_token: &str,
+        headset_id: &str,
+    ) -> CortexResult<SessionInfo> {
+        let result = self
+            .call(
+                Methods::CREATE_SESSION,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "headset": headset_id,
+                    "status": "active",
+                }),
+            )
+            .await?;
+
+        let session: SessionInfo =
+            serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse session info: {e}"),
+            })?;
+
+        tracing::info!(session_id = %session.id, "Session created");
+        Ok(session)
+    }
+
+    /// Query existing sessions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn query_sessions(&self, cortex_token: &str) -> CortexResult<Vec<SessionInfo>> {
+        let result = self
+            .call(
+                Methods::QUERY_SESSIONS,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                }),
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse sessions: {e}"),
+        })
+    }
+
+    /// Close an active session.
+    ///
+    /// Cortex method: `updateSession` with `status = "close"`.
+    /// Required state: authenticated token and a valid `session_id`.
+    /// Returns: `Ok(())` only when Cortex confirms the session update call.
+    /// Errors: session/auth/transport errors are propagated.
+    /// Retry/idempotency: generally safe to retry close on transient failures.
+    /// Related methods: [`Self::create_session`], [`Self::query_sessions`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn close_session(&self, cortex_token: &str, session_id: &str) -> CortexResult<()> {
+        self.call(
+            Methods::UPDATE_SESSION,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "session": session_id,
+                "status": "close",
+            }),
+        )
+        .await?;
+
+        tracing::info!(session_id, "Session closed");
+        Ok(())
+    }
+
+    // ─── Data Streams ───────────────────────────────────────────────────
+
+    /// Subscribe to one or more data streams.
+    ///
+    /// Returns the typed per-stream outcome. Cortex can partially
+    /// succeed: streams in [`SubscribeResult::success`] are live, streams
+    /// in [`SubscribeResult::failure`] are not — callers must check
+    /// `failure` (a partial failure is *not* an RPC error).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn subscribe_streams(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+        streams: &[&str],
+    ) -> CortexResult<SubscribeResult> {
+        let resp = self
+            .call(
+                Methods::SUBSCRIBE,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "session": session_id,
+                    "streams": streams,
+                }),
+            )
+            .await?;
+
+        let result: SubscribeResult =
+            serde_json::from_value(resp).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse subscribe result: {e}"),
+            })?;
+
+        if result.failure.is_empty() {
+            tracing::info!(session_id, ?streams, "Subscribed to data streams");
+        } else {
+            tracing::warn!(
+                session_id,
+                ?streams,
+                failed = result.failure.len(),
+                succeeded = result.success.len(),
+                "Subscribe completed with per-stream failures"
+            );
+        }
+        Ok(result)
+    }
+
+    /// Unsubscribe from one or more data streams.
+    ///
+    /// Returns the typed per-stream outcome (same shape as
+    /// [`subscribe_streams`](Self::subscribe_streams)); callers should
+    /// check [`SubscribeResult::failure`] for streams that could not be
+    /// unsubscribed.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn unsubscribe_streams(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+        streams: &[&str],
+    ) -> CortexResult<SubscribeResult> {
+        let resp = self
+            .call(
+                Methods::UNSUBSCRIBE,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "session": session_id,
+                    "streams": streams,
+                }),
+            )
+            .await?;
+
+        // Some server variants return `{"message": ...}` instead of the
+        // documented success/failure arrays. Accept that exact legacy shape
+        // as full success, but reject null, empty, and malformed responses.
+        let result = if resp.get("success").is_some() || resp.get("failure").is_some() {
+            serde_json::from_value(resp).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse unsubscribe result: {e}"),
+            })?
+        } else if resp
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        {
+            SubscribeResult::all_success(streams)
+        } else {
+            return Err(CortexError::ProtocolError {
+                reason: "Unsubscribe result has neither per-stream outcomes nor a message".into(),
+            });
+        };
+
+        if result.failure.is_empty() {
+            tracing::info!(session_id, ?streams, "Unsubscribed from data streams");
+        } else {
+            tracing::warn!(
+                session_id,
+                ?streams,
+                failed = result.failure.len(),
+                "Unsubscribe completed with per-stream failures"
+            );
+        }
+        Ok(result)
+    }
+
+    // ─── Records ────────────────────────────────────────────────────────
+
+    /// Start a new recording.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn create_record(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+        title: &str,
+    ) -> CortexResult<RecordInfo> {
+        let result = self
+            .call(
+                Methods::CREATE_RECORD,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "session": session_id,
+                    "title": title,
+                }),
+            )
+            .await?;
+
+        let record_value =
+            result
+                .get("record")
+                .cloned()
+                .ok_or_else(|| CortexError::ProtocolError {
+                    reason: "createRecord response missing 'record' field".into(),
+                })?;
+
+        let record: RecordInfo =
+            serde_json::from_value(record_value).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse record info: {e}"),
+            })?;
+
+        tracing::info!(record_id = %record.uuid, "Recording started");
+        Ok(record)
+    }
+
+    /// Stop an active recording.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn stop_record(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+    ) -> CortexResult<RecordInfo> {
+        let result = self
+            .call(
+                Methods::STOP_RECORD,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "session": session_id,
+                }),
+            )
+            .await?;
+
+        let record_value =
+            result
+                .get("record")
+                .cloned()
+                .ok_or_else(|| CortexError::ProtocolError {
+                    reason: "stopRecord response missing 'record' field".into(),
+                })?;
+
+        let record: RecordInfo =
+            serde_json::from_value(record_value).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse record info: {e}"),
+            })?;
+
+        tracing::info!(record_id = %record.uuid, "Recording stopped");
+        Ok(record)
+    }
+
+    /// Query recorded sessions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn query_records(
+        &self,
+        cortex_token: &str,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> CortexResult<Vec<RecordInfo>> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "query": {},
+            "orderBy": [{ "startDatetime": "DESC" }],
+        });
+
+        if let Some(limit) = limit {
+            params["limit"] = serde_json::json!(limit);
+        }
+        if let Some(offset) = offset {
+            params["offset"] = serde_json::json!(offset);
+        }
+
+        let result = self.call(Methods::QUERY_RECORDS, params).await?;
+
+        let records = result
+            .get("records")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(vec![]));
+
+        serde_json::from_value(records).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse records: {e}"),
+        })
+    }
+
+    /// Export a recording to CSV or EDF format.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn export_record(
+        &self,
+        cortex_token: &str,
+        record_ids: &[String],
+        folder: &str,
+        format: ExportFormat,
+    ) -> CortexResult<()> {
+        self.call(
+            Methods::EXPORT_RECORD,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "recordIds": record_ids,
+                "folder": folder,
+                "format": format.as_str(),
+            }),
+        )
+        .await?;
+
+        tracing::info!(
+            ?record_ids,
+            folder,
+            format = format.as_str(),
+            "Export initiated"
+        );
+        Ok(())
+    }
+
+    /// Update a recording's metadata (title, description, tags).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn update_record_with(
+        &self,
+        cortex_token: &str,
+        request: &UpdateRecordRequest,
+    ) -> CortexResult<RecordInfo> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "record": request.record_id.as_str(),
+        });
+
+        if let Some(t) = &request.title {
+            params["title"] = serde_json::json!(t);
+        }
+        if let Some(d) = &request.description {
+            params["description"] = serde_json::json!(d);
+        }
+        if let Some(t) = &request.tags {
+            params["tags"] = serde_json::json!(t);
+        }
+
+        let result = self.call(Methods::UPDATE_RECORD, params).await?;
+
+        let record_value =
+            result
+                .get("record")
+                .cloned()
+                .ok_or_else(|| CortexError::ProtocolError {
+                    reason: "updateRecord response missing 'record' field".into(),
+                })?;
+
+        serde_json::from_value(record_value).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse record info: {e}"),
+        })
+    }
+
+    /// Update a recording's metadata (title, description, tags).
+    #[deprecated(note = "Use `update_record_with` and `UpdateRecordRequest` instead.")]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn update_record(
+        &self,
+        cortex_token: &str,
+        record_id: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        tags: Option<&[String]>,
+    ) -> CortexResult<RecordInfo> {
+        let request = UpdateRecordRequest {
+            record_id: record_id.to_string(),
+            title: title.map(ToString::to_string),
+            description: description.map(ToString::to_string),
+            tags: tags.map(<[std::string::String]>::to_vec),
+        };
+        self.update_record_with(cortex_token, &request).await
+    }
+
+    /// Delete one or more recordings.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn delete_record(
+        &self,
+        cortex_token: &str,
+        record_ids: &[String],
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::DELETE_RECORD,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "records": record_ids,
+            }),
+        )
+        .await
+    }
+
+    /// Get detailed information for specific records by their IDs.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_record_infos(
+        &self,
+        cortex_token: &str,
+        record_ids: &[String],
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::GET_RECORD_INFOS,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "recordIds": record_ids,
+            }),
+        )
+        .await
+    }
+
+    /// Configure the opt-out setting for data sharing.
+    ///
+    /// Use `status: "get"` to query, `status: "set"` with `new_opt_out` to change.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn config_opt_out(
+        &self,
+        cortex_token: &str,
+        status: &str,
+        new_opt_out: Option<bool>,
+    ) -> CortexResult<serde_json::Value> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "status": status,
+        });
+
+        if let Some(opt) = new_opt_out {
+            params["newOptOut"] = serde_json::json!(opt);
+        }
+
+        self.call(Methods::CONFIG_OPT_OUT, params).await
+    }
+
+    /// Request to download recorded data from the Emotiv cloud.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn download_record(
+        &self,
+        cortex_token: &str,
+        record_ids: &[String],
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::DOWNLOAD_RECORD,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "recordIds": record_ids,
+            }),
+        )
+        .await
+    }
+
+    // ─── Markers ────────────────────────────────────────────────────────
+
+    /// Inject a time-stamped marker during an active recording.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn inject_marker(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+        label: &str,
+        value: i32,
+        port: &str,
+        time: Option<f64>,
+    ) -> CortexResult<MarkerInfo> {
+        let epoch_ms = match time {
+            Some(value) => value,
+            None => Self::current_epoch_millis()?
+                .to_string()
+                .parse::<f64>()
+                .map_err(|e| CortexError::ProtocolError {
+                    reason: format!("Failed to convert epoch milliseconds to f64: {e}"),
+                })?,
+        };
+
+        let params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "session": session_id,
+            "label": label,
+            "value": value,
+            "port": port,
+            "time": epoch_ms,
+        });
+
+        let result = self.call(Methods::INJECT_MARKER, params).await?;
+
+        let marker_value =
+            result
+                .get("marker")
+                .cloned()
+                .ok_or_else(|| CortexError::ProtocolError {
+                    reason: "injectMarker response missing 'marker' field".into(),
+                })?;
+
+        let marker: MarkerInfo =
+            serde_json::from_value(marker_value).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse marker info: {e}"),
+            })?;
+
+        // SECURITY: omit the user-supplied marker label from logs.
+        tracing::debug!(marker_id = %marker.uuid, "Marker injected");
+        Ok(marker)
+    }
+
+    /// Update a marker to convert it from an instance marker to an interval marker.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn update_marker(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+        marker_id: &str,
+        time: Option<f64>,
+    ) -> CortexResult<()> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "session": session_id,
+            "markerId": marker_id,
+        });
+
+        if let Some(t) = time {
+            params["time"] = serde_json::json!(t);
+        }
+
+        self.call(Methods::UPDATE_MARKER, params).await?;
+        tracing::debug!(marker_id, "Marker updated");
+        Ok(())
+    }
+
+    // ─── Subjects ────────────────────────────────────────────────────────
+
+    /// Create a new subject.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn create_subject_with(
+        &self,
+        cortex_token: &str,
+        request: &SubjectRequest,
+    ) -> CortexResult<SubjectInfo> {
+        let result = self
+            .call(
+                Methods::CREATE_SUBJECT,
+                Self::subject_params(cortex_token, request),
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse subject info: {e}"),
+        })
+    }
+
+    /// Create a new subject.
+    #[deprecated(note = "Use `create_subject_with` and `SubjectRequest` instead.")]
+    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn create_subject(
+        &self,
+        cortex_token: &str,
+        subject_name: &str,
+        date_of_birth: Option<&str>,
+        sex: Option<&str>,
+        country_code: Option<&str>,
+        state: Option<&str>,
+        city: Option<&str>,
+        attributes: Option<&[serde_json::Value]>,
+    ) -> CortexResult<SubjectInfo> {
+        let request = SubjectRequest {
+            subject_name: subject_name.to_string(),
+            date_of_birth: date_of_birth.map(ToString::to_string),
+            sex: sex.map(ToString::to_string),
+            country_code: country_code.map(ToString::to_string),
+            state: state.map(ToString::to_string),
+            city: city.map(ToString::to_string),
+            attributes: attributes.map(<[serde_json::Value]>::to_vec),
+        };
+        self.create_subject_with(cortex_token, &request).await
+    }
+
+    /// Update an existing subject's information.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn update_subject_with(
+        &self,
+        cortex_token: &str,
+        request: &SubjectRequest,
+    ) -> CortexResult<SubjectInfo> {
+        let result = self
+            .call(
+                Methods::UPDATE_SUBJECT,
+                Self::subject_params(cortex_token, request),
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse subject info: {e}"),
+        })
+    }
+
+    /// Update an existing subject's information.
+    #[deprecated(note = "Use `update_subject_with` and `SubjectRequest` instead.")]
+    #[allow(clippy::too_many_arguments)]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn update_subject(
+        &self,
+        cortex_token: &str,
+        subject_name: &str,
+        date_of_birth: Option<&str>,
+        sex: Option<&str>,
+        country_code: Option<&str>,
+        state: Option<&str>,
+        city: Option<&str>,
+        attributes: Option<&[serde_json::Value]>,
+    ) -> CortexResult<SubjectInfo> {
+        let request = SubjectRequest {
+            subject_name: subject_name.to_string(),
+            date_of_birth: date_of_birth.map(ToString::to_string),
+            sex: sex.map(ToString::to_string),
+            country_code: country_code.map(ToString::to_string),
+            state: state.map(ToString::to_string),
+            city: city.map(ToString::to_string),
+            attributes: attributes.map(<[serde_json::Value]>::to_vec),
+        };
+        self.update_subject_with(cortex_token, &request).await
+    }
+
+    /// Delete one or more subjects.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn delete_subjects(
+        &self,
+        cortex_token: &str,
+        subject_names: &[String],
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::DELETE_SUBJECTS,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "subjects": subject_names,
+            }),
+        )
+        .await
+    }
+
+    /// Query subjects with filtering, sorting, and pagination.
+    ///
+    /// Returns a tuple of (subjects, `total_count`).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn query_subjects_with(
+        &self,
+        cortex_token: &str,
+        request: &QuerySubjectsRequest,
+    ) -> CortexResult<(Vec<SubjectInfo>, u32)> {
+        let result = self
+            .call(
+                Methods::QUERY_SUBJECTS,
+                Self::query_subjects_params(cortex_token, request),
+            )
+            .await?;
+
+        let count = result
+            .get("count")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0);
+
+        let subjects_value = result
+            .get("subjects")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(vec![]));
+
+        let subjects: Vec<SubjectInfo> =
+            serde_json::from_value(subjects_value).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse subjects: {e}"),
+            })?;
+
+        Ok((subjects, count))
+    }
+
+    /// Query subjects with filtering, sorting, and pagination.
+    ///
+    /// Returns a tuple of (subjects, `total_count`).
+    #[deprecated(note = "Use `query_subjects_with` and `QuerySubjectsRequest` instead.")]
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn query_subjects(
+        &self,
+        cortex_token: &str,
+        query: serde_json::Value,
+        order_by: serde_json::Value,
+        limit: Option<u32>,
+        offset: Option<u32>,
+    ) -> CortexResult<(Vec<SubjectInfo>, u32)> {
+        let request = QuerySubjectsRequest {
+            query,
+            order_by,
+            limit,
+            offset,
+        };
+        self.query_subjects_with(cortex_token, &request).await
+    }
+
+    /// Get the list of valid demographic attributes.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_demographic_attributes(
+        &self,
+        cortex_token: &str,
+    ) -> CortexResult<Vec<DemographicAttribute>> {
+        let result = self
+            .call(
+                Methods::GET_DEMOGRAPHIC_ATTRIBUTES,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                }),
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse demographic attributes: {e}"),
+        })
+    }
+
+    // ─── Profiles ───────────────────────────────────────────────────────
+
+    /// List all profiles for the current user.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn query_profiles(&self, cortex_token: &str) -> CortexResult<Vec<ProfileInfo>> {
+        let result = self
+            .call(
+                Methods::QUERY_PROFILE,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                }),
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse profiles: {e}"),
+        })
+    }
+
+    /// Get the profile currently loaded for a headset.
+    ///
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_current_profile(
+        &self,
+        cortex_token: &str,
+        headset_id: &str,
+    ) -> CortexResult<CurrentProfileInfo> {
+        let result = self
+            .call(
+                Methods::GET_CURRENT_PROFILE,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "headset": headset_id,
+                }),
+            )
+            .await?;
+
+        let profile: CurrentProfileInfo =
+            serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+                reason: format!("Failed to parse current profile info: {e}"),
+            })?;
+
+        Ok(profile)
+    }
+
+    /// Manage a profile (create, load, unload, save, rename, delete).
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn setup_profile(
+        &self,
+        cortex_token: &str,
+        headset_id: &str,
+        profile_name: &str,
+        action: ProfileAction,
+    ) -> CortexResult<()> {
+        self.call(
+            Methods::SETUP_PROFILE,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "headset": headset_id,
+                "profile": profile_name,
+                "status": action.as_str(),
+            }),
+        )
+        .await?;
+
+        tracing::info!(
+            profile = profile_name,
+            action = action.as_str(),
+            "Profile action completed"
+        );
+        Ok(())
+    }
+
+    /// Load an empty guest profile for a headset.
+    ///
+    /// This unloads any currently loaded profile and loads a blank guest profile,
+    /// useful for starting fresh without trained data.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn load_guest_profile(
+        &self,
+        cortex_token: &str,
+        headset_id: &str,
+    ) -> CortexResult<()> {
+        self.call(
+            Methods::LOAD_GUEST_PROFILE,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "headset": headset_id,
+            }),
+        )
+        .await?;
+
+        tracing::info!(headset = headset_id, "Guest profile loaded");
+        Ok(())
+    }
+
+    // ─── BCI / Training ─────────────────────────────────────────────────
+
+    /// Get detection info for a specific detection type.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_detection_info(
+        &self,
+        detection: DetectionType,
+    ) -> CortexResult<DetectionInfo> {
+        let result = self
+            .call(
+                Methods::GET_DETECTION_INFO,
+                serde_json::json!({
+                    "detection": detection.as_str(),
+                }),
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse detection info: {e}"),
+        })
+    }
+
+    /// Control the training lifecycle for mental commands or facial expressions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn training(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+        detection: DetectionType,
+        status: TrainingStatus,
+        action: &str,
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::TRAINING,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "session": session_id,
+                "detection": detection.as_str(),
+                "status": status.as_str(),
+                "action": action,
+            }),
+        )
+        .await
+    }
+
+    /// Get or set the active mental command actions.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn mental_command_active_action(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+        actions: Option<&[&str]>,
+    ) -> CortexResult<serde_json::Value> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "session": session_id,
+            "status": if actions.is_some() { "set" } else { "get" },
+        });
+
+        if let Some(actions) = actions {
+            params["actions"] = serde_json::json!(actions);
+        }
+
+        self.call(Methods::MENTAL_COMMAND_ACTIVE_ACTION, params)
+            .await
+    }
+
+    /// Get or set the mental command action sensitivity.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn mental_command_action_sensitivity(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+        values: Option<&[i32]>,
+    ) -> CortexResult<serde_json::Value> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "session": session_id,
+            "status": if values.is_some() { "set" } else { "get" },
+        });
+
+        if let Some(values) = values {
+            params["values"] = serde_json::json!(values);
+        }
+
+        self.call(Methods::MENTAL_COMMAND_ACTION_SENSITIVITY, params)
+            .await
+    }
+
+    /// Get the mental command brain map.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn mental_command_brain_map(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::MENTAL_COMMAND_BRAIN_MAP,
+            serde_json::json!({
+                "cortexToken": cortex_token,
+                "session": session_id,
+            }),
+        )
+        .await
+    }
+
+    /// Get the mental command training threshold for an active session.
+    ///
+    /// Cortex method: `mentalCommandTrainingThreshold`
+    /// Required state: authenticated token and active session.
+    /// Parameters: `session_id` selects the target session.
+    /// Returns: raw JSON payload from Cortex.
+    /// Related methods:
+    /// [`Self::mental_command_training_threshold_with_params`],
+    /// [`Self::mental_command_training_threshold_for_profile`].
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn mental_command_training_threshold(
+        &self,
+        cortex_token: &str,
+        session_id: &str,
+    ) -> CortexResult<serde_json::Value> {
+        let request = MentalCommandTrainingThresholdRequest {
+            session_id: Some(session_id.to_string()),
+            profile: None,
+            status: None,
+            value: None,
+        };
+        self.mental_command_training_threshold_with_request(cortex_token, &request)
+            .await
+    }
+
+    /// Get or set the mental command training threshold for a profile.
+    ///
+    /// Set `status` to `Some("set")` and provide `value` to update.
+    /// Use `status = None` (or `Some("get")`) to read the threshold.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn mental_command_training_threshold_for_profile(
+        &self,
+        cortex_token: &str,
+        profile: &str,
+        status: Option<&str>,
+        value: Option<f64>,
+    ) -> CortexResult<serde_json::Value> {
+        let request = MentalCommandTrainingThresholdRequest {
+            session_id: None,
+            profile: Some(profile.to_string()),
+            status: status.map(ToString::to_string),
+            value,
+        };
+        self.mental_command_training_threshold_with_request(cortex_token, &request)
+            .await
+    }
+
+    /// Get or set the mental command training threshold using a typed request.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn mental_command_training_threshold_with_request(
+        &self,
+        cortex_token: &str,
+        request: &MentalCommandTrainingThresholdRequest,
+    ) -> CortexResult<serde_json::Value> {
+        let params = Self::mental_command_training_threshold_params(
+            cortex_token,
+            request.session_id.as_deref(),
+            request.profile.as_deref(),
+            request.status.as_deref(),
+            request.value,
+        )?;
+
+        self.call(Methods::MENTAL_COMMAND_TRAINING_THRESHOLD, params)
+            .await
+    }
+
+    /// Get or set the mental command training threshold using either session
+    /// or profile targeting.
+    ///
+    /// Exactly one of `session_id` or `profile` must be provided.
+    /// If `status` is `None`, this infers `"get"` when `value` is `None`,
+    /// otherwise `"set"`.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    #[deprecated(
+        note = "Use `mental_command_training_threshold_with_request` and `MentalCommandTrainingThresholdRequest` instead."
+    )]
+    pub async fn mental_command_training_threshold_with_params(
+        &self,
+        cortex_token: &str,
+        session_id: Option<&str>,
+        profile: Option<&str>,
+        status: Option<&str>,
+        value: Option<f64>,
+    ) -> CortexResult<serde_json::Value> {
+        let request = MentalCommandTrainingThresholdRequest {
+            session_id: session_id.map(ToString::to_string),
+            profile: profile.map(ToString::to_string),
+            status: status.map(ToString::to_string),
+            value,
+        };
+        self.mental_command_training_threshold_with_request(cortex_token, &request)
+            .await
+    }
+
+    /// Get a list of trained actions for a profile's detection type.
+    ///
+    /// Specify either `profile` (by name) or `session` (by ID), not both.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_trained_signature_actions(
+        &self,
+        cortex_token: &str,
+        detection: DetectionType,
+        profile: Option<&str>,
+        session: Option<&str>,
+    ) -> CortexResult<TrainedSignatureActions> {
+        let mut params = serde_json::json!({
+            "cortexToken": cortex_token,
+            "detection": detection.as_str(),
+        });
+
+        if let Some(p) = profile {
+            params["profile"] = serde_json::json!(p);
+        }
+        if let Some(s) = session {
+            params["session"] = serde_json::json!(s);
+        }
+
+        let result = self
+            .call(Methods::GET_TRAINED_SIGNATURE_ACTIONS, params)
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse trained signature actions: {e}"),
+        })
+    }
+
+    /// Get the duration of a training session.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn get_training_time(
+        &self,
+        cortex_token: &str,
+        detection: DetectionType,
+        session_id: &str,
+    ) -> CortexResult<TrainingTime> {
+        let result = self
+            .call(
+                Methods::GET_TRAINING_TIME,
+                serde_json::json!({
+                    "cortexToken": cortex_token,
+                    "detection": detection.as_str(),
+                    "session": session_id,
+                }),
+            )
+            .await?;
+
+        serde_json::from_value(result).map_err(|e| CortexError::ProtocolError {
+            reason: format!("Failed to parse training time: {e}"),
+        })
+    }
+
+    /// Get or set the facial expression signature type.
+    ///
+    /// Use `status: "get"` to query, `status: "set"` with `signature` to change.
+    /// Specify either `profile` or `session`, not both.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn facial_expression_signature_type_with(
+        &self,
+        cortex_token: &str,
+        request: &FacialExpressionSignatureTypeRequest,
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::FACIAL_EXPRESSION_SIGNATURE_TYPE,
+            Self::facial_expression_signature_type_params(cortex_token, request),
+        )
+        .await
+    }
+
+    /// Get or set the facial expression signature type.
+    ///
+    /// Use `status: "get"` to query, `status: "set"` with `signature` to change.
+    /// Specify either `profile` or `session`, not both.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    #[deprecated(
+        note = "Use `facial_expression_signature_type_with` and `FacialExpressionSignatureTypeRequest` instead."
+    )]
+    pub async fn facial_expression_signature_type(
+        &self,
+        cortex_token: &str,
+        status: &str,
+        profile: Option<&str>,
+        session: Option<&str>,
+        signature: Option<&str>,
+    ) -> CortexResult<serde_json::Value> {
+        let request = FacialExpressionSignatureTypeRequest {
+            status: status.to_string(),
+            profile: profile.map(ToString::to_string),
+            session: session.map(ToString::to_string),
+            signature: signature.map(ToString::to_string),
+        };
+        self.facial_expression_signature_type_with(cortex_token, &request)
+            .await
+    }
+
+    /// Get or set the threshold of a facial expression action.
+    ///
+    /// Use `status: "get"` to query, `status: "set"` with `value` to change.
+    /// Specify either `profile` or `session`, not both.
+    /// The `value` range is 0–1000.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    pub async fn facial_expression_threshold_with(
+        &self,
+        cortex_token: &str,
+        request: &FacialExpressionThresholdRequest,
+    ) -> CortexResult<serde_json::Value> {
+        self.call(
+            Methods::FACIAL_EXPRESSION_THRESHOLD,
+            Self::facial_expression_threshold_params(cortex_token, request),
+        )
+        .await
+    }
+
+    /// Get or set the threshold of a facial expression action.
+    ///
+    /// Use `status: "get"` to query, `status: "set"` with `value` to change.
+    /// Specify either `profile` or `session`, not both.
+    /// The `value` range is 0–1000.
+    ///
+    /// # Errors
+    /// Returns any error produced by the underlying Cortex API call,
+    /// including connection, authentication, protocol, timeout, and configuration errors.
+    #[deprecated(
+        note = "Use `facial_expression_threshold_with` and `FacialExpressionThresholdRequest` instead."
+    )]
+    pub async fn facial_expression_threshold(
+        &self,
+        cortex_token: &str,
+        status: &str,
+        action: &str,
+        profile: Option<&str>,
+        session: Option<&str>,
+        value: Option<u32>,
+    ) -> CortexResult<serde_json::Value> {
+        let request = FacialExpressionThresholdRequest {
+            status: status.to_string(),
+            action: action.to_string(),
+            profile: profile.map(ToString::to_string),
+            session: session.map(ToString::to_string),
+            value,
+        };
+        self.facial_expression_threshold_with(cortex_token, &request)
+            .await
+    }
+
+    // ─── Connection Management ──────────────────────────────────────────
+
+    /// Returns whether the reader loop is still running.
+    pub fn is_connected(&self) -> bool {
+        self.reader_running.load(Ordering::SeqCst)
+    }
+
+    /// Shut down the connection: stop the reader loop, close the
+    /// WebSocket, and terminate all pending RPCs and stream channels.
+    ///
+    /// Idempotent and callable through `Arc<CortexClient>`; every step
+    /// is bounded so shutdown cannot hang. Used by [`disconnect`]
+    /// (explicit teardown), by `ResilientClient` when replacing a
+    /// connection after reconnect, and (signal/abort only) by `Drop`.
+    ///
+    /// [`disconnect`]: Self::disconnect
+    pub async fn shutdown(&self) {
+        // Signal the reader loop to stop.
+        self.reader_running.store(false, Ordering::SeqCst);
+        let _ = self.reader_shutdown.send(true);
+
+        // Best-effort bounded close of the write half so the server sees
+        // a WebSocket Close frame instead of an abrupt TCP drop.
+        if let Ok(mut writer) =
+            tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, self.writer.lock()).await
+        {
+            let _ = tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, writer.close()).await;
+        }
+
+        // Join the reader task; abort as a fallback if it does not exit
+        // in time (e.g. blocked on a half-dead socket).
+        let handle = self
+            .reader_handle
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        if let Some(mut handle) = handle {
+            if tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, &mut handle)
+                .await
+                .is_err()
+            {
+                handle.abort();
+                let _ = handle.await;
+            }
+            // The aborted reader may have skipped its cleanup block.
+            Self::drain_pending_connection_lost(&self.pending_responses, "Client shut down").await;
+            if let Ok(mut guard) = self.stream_senders.lock() {
+                *guard = None;
+            }
+        }
+    }
+
+    /// Stop the reader loop (alias for [`shutdown`](Self::shutdown)).
+    pub async fn stop_reader(&mut self) {
+        self.shutdown().await;
+    }
+
+    /// Close the WebSocket connection.
+    ///
+    /// # Errors
+    /// Currently infallible; returns `Ok(())` after a bounded shutdown.
+    pub async fn disconnect(&mut self) -> CortexResult<()> {
+        self.shutdown().await;
+        Ok(())
+    }
+}
+
+impl Drop for CortexClient {
+    /// Non-async fallback: signal the reader loop and abort its task so
+    /// a dropped client cannot leak a background task or socket. Prefer
+    /// calling [`shutdown`](Self::shutdown)/[`disconnect`](Self::disconnect)
+    /// for a graceful close.
+    fn drop(&mut self) {
+        self.reader_running.store(false, Ordering::SeqCst);
+        let _ = self.reader_shutdown.send(true);
+        if let Ok(mut guard) = self.reader_handle.lock() {
+            if let Some(handle) = guard.take() {
+                handle.abort();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_query_headsets_params_default_is_empty() {
+        let params = CortexClient::query_headsets_params(QueryHeadsetsOptions::default());
+        assert_eq!(params, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_query_headsets_params_with_id() {
+        let params = CortexClient::query_headsets_params(QueryHeadsetsOptions {
+            id: Some("HS-123".into()),
+            include_flex_mappings: false,
+        });
+        assert_eq!(params["id"], "HS-123");
+        assert!(params.get("includeFlexMappings").is_none());
+    }
+
+    #[test]
+    fn test_query_headsets_params_with_include_flex_mappings() {
+        let params = CortexClient::query_headsets_params(QueryHeadsetsOptions {
+            id: None,
+            include_flex_mappings: true,
+        });
+        assert_eq!(params["includeFlexMappings"], true);
+        assert!(params.get("id").is_none());
+    }
+
+    #[test]
+    fn test_query_headsets_params_with_both_options() {
+        let params = CortexClient::query_headsets_params(QueryHeadsetsOptions {
+            id: Some("HS-123".into()),
+            include_flex_mappings: true,
+        });
+        assert_eq!(params["id"], "HS-123");
+        assert_eq!(params["includeFlexMappings"], true);
+    }
+
+    #[test]
+    fn test_sync_with_headset_clock_params_use_docs_shape() {
+        let params =
+            CortexClient::sync_with_headset_clock_params_with_times("HS-123", 12.34, 5678.25);
+        assert_eq!(params["headset"], "HS-123");
+        assert_eq!(params["monotonicTime"], 12.34);
+        assert_eq!(params["systemTime"], 5678.25);
+        assert!(params.get("cortexToken").is_none());
+        assert!(params.get("headsetId").is_none());
+    }
+
+    #[test]
+    fn test_update_headset_uses_headset_id() {
+        let params = CortexClient::update_headset_params(
+            "token",
+            "HS-123",
+            &serde_json::json!({
+                "mode": "EPOCPLUS",
+                "eegRate": 256,
+                "memsRate": 64,
+            }),
+        );
+        assert_eq!(params["cortexToken"], "token");
+        assert_eq!(params["headsetId"], "HS-123");
+        assert_eq!(params["setting"]["mode"], "EPOCPLUS");
+        assert!(params.get("headset").is_none());
+    }
+
+    #[test]
+    fn test_update_headset_custom_info_uses_headset_id() {
+        let params = CortexClient::update_headset_custom_info_params(
+            "token",
+            "HS-123",
+            Some("front"),
+            Some("My Headset"),
+        );
+        assert_eq!(params["headsetId"], "HS-123");
+        assert_eq!(params["headbandPosition"], "front");
+        assert_eq!(params["customName"], "My Headset");
+        assert!(params.get("headset").is_none());
+    }
+
+    #[test]
+    fn test_update_headset_custom_info_omits_optional_fields_when_none() {
+        let params = CortexClient::update_headset_custom_info_params("token", "HS-123", None, None);
+        assert_eq!(params["headsetId"], "HS-123");
+        assert!(params.get("headbandPosition").is_none());
+        assert!(params.get("customName").is_none());
+        assert!(params.get("headset").is_none());
+    }
+
+    #[test]
+    fn test_config_mapping_create_params_validation() {
+        let empty_name = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Create {
+                name: "   ".into(),
+                mappings: serde_json::json!({"CMS":"TP9"}),
+            },
+        );
+        assert!(matches!(empty_name, Err(CortexError::ProtocolError { .. })));
+
+        let invalid = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Create {
+                name: "cfg".into(),
+                mappings: serde_json::json!(["not-an-object"]),
+            },
+        );
+        assert!(matches!(invalid, Err(CortexError::ProtocolError { .. })));
+
+        let valid = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Create {
+                name: "cfg".into(),
+                mappings: serde_json::json!({"CMS":"TP9"}),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(valid.0, ConfigMappingMode::Create));
+        assert_eq!(valid.1["status"], "create");
+        assert_eq!(valid.1["name"], "cfg");
+    }
+
+    #[test]
+    fn test_config_mapping_read_and_delete_require_uuid() {
+        let read = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Read {
+                uuid: String::new(),
+            },
+        );
+        assert!(matches!(read, Err(CortexError::ProtocolError { .. })));
+
+        let delete = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Delete {
+                uuid: String::new(),
+            },
+        );
+        assert!(matches!(delete, Err(CortexError::ProtocolError { .. })));
+    }
+
+    #[test]
+    fn test_config_mapping_update_requires_name_or_mappings() {
+        let missing = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "uuid-1".into(),
+                name: None,
+                mappings: None,
+            },
+        );
+        assert!(matches!(missing, Err(CortexError::ProtocolError { .. })));
+
+        let valid = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "uuid-1".into(),
+                name: Some("new".into()),
+                mappings: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(valid.0, ConfigMappingMode::Update));
+        assert_eq!(valid.1["uuid"], "uuid-1");
+        assert_eq!(valid.1["name"], "new");
+    }
+
+    #[test]
+    fn test_config_mapping_update_validation_cases() {
+        let empty_uuid = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "  ".into(),
+                name: Some("new-name".into()),
+                mappings: None,
+            },
+        );
+        assert!(matches!(empty_uuid, Err(CortexError::ProtocolError { .. })));
+
+        let empty_name = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "uuid-1".into(),
+                name: Some(String::new()),
+                mappings: None,
+            },
+        );
+        assert!(matches!(empty_name, Err(CortexError::ProtocolError { .. })));
+
+        let invalid_mappings = CortexClient::config_mapping_params(
+            "token",
+            ConfigMappingRequest::Update {
+                uuid: "uuid-1".into(),
+                name: None,
+                mappings: Some(serde_json::json!(["bad-shape"])),
+            },
+        );
+        assert!(matches!(
+            invalid_mappings,
+            Err(CortexError::ProtocolError { .. })
+        ));
+    }
+
+    #[test]
+    fn test_mental_command_training_threshold_params_get_and_set_modes() {
+        let get_params = CortexClient::mental_command_training_threshold_params(
+            "token",
+            Some("session-1"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(get_params["status"], "get");
+        assert_eq!(get_params["session"], "session-1");
+        assert!(get_params.get("value").is_none());
+
+        let set_params = CortexClient::mental_command_training_threshold_params(
+            "token",
+            None,
+            Some("profile-a"),
+            Some("set"),
+            Some(0.42),
+        )
+        .unwrap();
+        assert_eq!(set_params["status"], "set");
+        assert_eq!(set_params["profile"], "profile-a");
+        assert_eq!(set_params["value"], 0.42);
+    }
+
+    #[test]
+    fn test_mental_command_training_threshold_params_validation() {
+        let both = CortexClient::mental_command_training_threshold_params(
+            "token",
+            Some("session-1"),
+            Some("profile-a"),
+            None,
+            None,
+        );
+        assert!(matches!(both, Err(CortexError::ProtocolError { .. })));
+
+        let neither =
+            CortexClient::mental_command_training_threshold_params("token", None, None, None, None);
+        assert!(matches!(neither, Err(CortexError::ProtocolError { .. })));
+    }
+}

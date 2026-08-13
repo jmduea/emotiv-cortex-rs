@@ -1,0 +1,71 @@
+[package]
+name = "neuroclient-tui"
+version = "0.4.0"
+publish = false
+edition.workspace = true
+# The unpublished TUI tracks ratatui 0.30, whose MSRV is 1.88. The published
+# neuroclient library intentionally stays at the workspace MSRV (1.85).
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+description = "NeuroClient terminal dashboard for the Emotiv Cortex v2 API"
+repository = "https://github.com/jmduea/NeuroClient"
+homepage = "https://github.com/jmduea/NeuroClient"
+readme = "README.md"
+exclude = ["tests/", ".github/"]
+keywords = ["emotiv", "cortex", "eeg", "tui", "bci"]
+categories = ["command-line-utilities", "science"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "neuroclient-tui"
+path = "src/main.rs"
+
+[features]
+default = []
+lsl = ["dep:lsl", "dep:libc"]
+
+[dependencies]
+
+neuroclient = { version = "=0.4.0", path = "../neuroclient", default-features = false, features = [
+    "rustls-tls",
+    "config-toml",
+] }
+
+# Async runtime
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "time",
+    "sync",
+] }
+futures-core = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# Serialization
+serde_json = "1"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# TUI
+ratatui = { version = "0.30", default-features = false, features = [
+    "crossterm_0_29",
+    "all-widgets",
+    "layout-cache",
+    "macros",
+    "underline-color",
+] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+# Lab Streaming Layer (optional; currently unsupported on Linux)
+lsl = { version = "0.1", optional = true }
+# Used to redirect stderr around liblsl's noisy C-level multicast warnings
+libc = { version = "0.2", optional = true }

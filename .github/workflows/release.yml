@@ -9,6 +9,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  security:
+    name: Security gates
+    uses: ./.github/workflows/security.yml
+
   validate-release-contract:
     name: Validate release contract
     runs-on: ubuntu-latest
@@ -21,39 +25,75 @@ jobs:
           set -euo pipefail
 
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          V2_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-v2/Cargo.toml | head -n1)
-          TUI_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/emotiv-cortex-tui/Cargo.toml | head -n1)
-          TUI_V2_PIN=$(sed -n 's/^emotiv-cortex-v2 = { version = "=\([^"]*\)".*$/\1/p' crates/emotiv-cortex-tui/Cargo.toml | head -n1)
+          LIB_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/neuroclient/Cargo.toml | head -n1)
+          TUI_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/neuroclient-tui/Cargo.toml | head -n1)
+          TUI_LIB_PIN=$(sed -n 's/^neuroclient = { version = "=\([^"]*\)".*$/\1/p' crates/neuroclient-tui/Cargo.toml | head -n1)
 
-          if [[ -z "$TAG_VERSION" || -z "$V2_VERSION" || -z "$TUI_VERSION" || -z "$TUI_V2_PIN" ]]; then
+          if [[ -z "$TAG_VERSION" || -z "$LIB_VERSION" || -z "$TUI_VERSION" || -z "$TUI_LIB_PIN" ]]; then
             echo "Failed to parse the full release contract."
             echo "tag=$TAG_VERSION"
-            echo "emotiv-cortex-v2 version=$V2_VERSION"
-            echo "emotiv-cortex-tui version=$TUI_VERSION"
-            echo "emotiv-cortex-tui -> emotiv-cortex-v2 exact pin=$TUI_V2_PIN"
+            echo "neuroclient version=$LIB_VERSION"
+            echo "neuroclient-tui version=$TUI_VERSION"
+            echo "neuroclient-tui -> neuroclient exact pin=$TUI_LIB_PIN"
             exit 1
           fi
 
-          if [[ "$TAG_VERSION" != "$V2_VERSION" || "$TAG_VERSION" != "$TUI_VERSION" || "$TAG_VERSION" != "$TUI_V2_PIN" ]]; then
+          if [[ "$TAG_VERSION" != "$LIB_VERSION" || "$TAG_VERSION" != "$TUI_VERSION" || "$TAG_VERSION" != "$TUI_LIB_PIN" ]]; then
             echo "Release contract mismatch detected."
             echo "tag=$TAG_VERSION"
-            echo "emotiv-cortex-v2 version=$V2_VERSION"
-            echo "emotiv-cortex-tui version=$TUI_VERSION"
-            echo "emotiv-cortex-tui -> emotiv-cortex-v2 exact pin=$TUI_V2_PIN"
+            echo "neuroclient version=$LIB_VERSION"
+            echo "neuroclient-tui version=$TUI_VERSION"
+            echo "neuroclient-tui -> neuroclient exact pin=$TUI_LIB_PIN"
+            exit 1
+          fi
+
+      - name: Validate lockfile, README install snippet, and changelog
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+
+          # Lockfile must already record the released crate versions.
+          for crate in neuroclient neuroclient-tui; do
+            locked=$(awk -v crate="$crate" '
+              $0 == "name = \"" crate "\"" { found=1; next }
+              found && /^version = / { gsub(/version = |"/, ""); print; exit }
+            ' Cargo.lock)
+            if [[ "$locked" != "$TAG_VERSION" ]]; then
+              echo "Cargo.lock records $crate $locked but the tag is $TAG_VERSION."
+              echo "Run 'cargo update -w' and commit the lockfile before tagging."
+              exit 1
+            fi
+          done
+
+          # The crate README install snippet must reference the version being
+          # released so crates.io never shows a stale or future version.
+          if ! grep -qE "^neuroclient = \"$TAG_VERSION\"$" crates/neuroclient/README.md; then
+            echo "crates/neuroclient/README.md install snippet does not read"
+            echo "  neuroclient = \"$TAG_VERSION\""
+            echo "Update the README Quick Start before tagging."
+            exit 1
+          fi
+
+          # The changelog must contain a released section for this version.
+          if ! grep -qE "^## \[$TAG_VERSION\]" CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [$TAG_VERSION]' section."
+            echo "Move the Unreleased notes into a versioned section before tagging."
             exit 1
           fi
 
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: validate-release-contract
+    needs: [validate-release-contract, security]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Publish emotiv-cortex-v2
-        run: cargo publish -p emotiv-cortex-v2
+      - name: Publish neuroclient
+        run: cargo publish -p neuroclient
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -62,28 +102,28 @@ jobs:
   build-windows:
     name: Build Windows binaries
     runs-on: windows-latest
-    needs: validate-release-contract
+    needs: [validate-release-contract, security]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build emotiv-cortex-tui (release, no LSL)
-        run: cargo build -p emotiv-cortex-tui --release --no-default-features
+      - name: Build neuroclient-tui (release, no LSL)
+        run: cargo build -p neuroclient-tui --release --no-default-features
 
       - name: Stash baseline binary
-        run: Copy-Item target/release/emotiv-cortex-tui.exe target/release/emotiv-cortex-tui-nolsl.exe
+        run: Copy-Item target/release/neuroclient-tui.exe target/release/neuroclient-tui-nolsl.exe
 
-      - name: Build emotiv-cortex-tui (release, with LSL)
-        run: cargo build -p emotiv-cortex-tui --release --no-default-features --features lsl
+      - name: Build neuroclient-tui (release, with LSL)
+        run: cargo build -p neuroclient-tui --release --no-default-features --features lsl
 
       - name: Upload Windows binaries
         uses: actions/upload-artifact@v4
         with:
-          name: emotiv-cortex-tui-windows-x86_64
+          name: neuroclient-tui-windows-x86_64
           path: |
-            target/release/emotiv-cortex-tui-nolsl.exe
-            target/release/emotiv-cortex-tui.exe
+            target/release/neuroclient-tui-nolsl.exe
+            target/release/neuroclient-tui.exe
 
   release:
     name: Create GitHub Release
@@ -97,12 +137,12 @@ jobs:
       - name: Download Windows binaries
         uses: actions/download-artifact@v4
         with:
-          name: emotiv-cortex-tui-windows-x86_64
+          name: neuroclient-tui-windows-x86_64
 
       - name: Rename assets for release
         run: |
-          mv emotiv-cortex-tui-nolsl.exe emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
-          mv emotiv-cortex-tui.exe emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe
+          mv neuroclient-tui-nolsl.exe neuroclient-tui-x86_64-pc-windows-msvc.exe
+          mv neuroclient-tui.exe neuroclient-tui-x86_64-pc-windows-msvc-lsl.exe
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -111,7 +151,7 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
-            emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
-            emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe
+            neuroclient-tui-x86_64-pc-windows-msvc.exe
+            neuroclient-tui-x86_64-pc-windows-msvc-lsl.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

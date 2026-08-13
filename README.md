@@ -1,86 +1,86 @@
-# emotiv-cortex-rs
+# NeuroClient
 
-[![CI](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/emotiv-cortex-rs/actions/workflows/ci.yml)
+[![CI](https://github.com/jmduea/NeuroClient/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmduea/NeuroClient/actions/workflows/ci.yml)
 
-Rust workspace containing the source code for emotiv-cortex-v2 and emotiv-cortex-tui.
+An independent Rust client for the Emotiv Cortex v2 API.
 
-## For developers
+This workspace contains:
 
-- [`emotiv-cortex-v2`](https://github.com/jmduea/emotiv-cortex-rs/tree/main/crates/emotiv-cortex-v2)/[crates.io](https://crates.io/crates/emotiv-cortex-v2) - typed Rust client for the Emotiv Cortex v2 WebSocket API
-
-## For people who just want an easy way to connect their device and see it in action/use lsl
-
-- [`emotiv-cortex-tui`](https://github.com/jmduea/emotiv-cortex-rs/tree/main/crates/emotiv-cortex-tui) - interactive TUI for exploring Cortex APIs and streaming
-self-documenting LSL outlets
+- [`neuroclient`](crates/neuroclient) — typed, asynchronous Cortex v2 client library
+- [`neuroclient-tui`](crates/neuroclient-tui) — interactive dashboard and optional
+  Lab Streaming Layer (LSL) bridge
 
 ## Release policy
 
-- The next repository release is `0.4.0` for both `emotiv-cortex-v2` and `emotiv-cortex-tui`.
-- `emotiv-cortex-v2` is the only crates.io package published from this workspace.
-- `emotiv-cortex-tui` exact-pins `emotiv-cortex-v2 =0.4.0` and is distributed as Windows binaries on GitHub Releases; non-Windows users should build it from source.
-
-## Contributors
-
-- Contributions are welcome, below you'll find some of the checks to be done before any pull requests are made.
+- `0.4.0` will be the first release under the NeuroClient identity.
+- The former `emotiv-cortex-v2` package is frozen and unyanked at `0.3.4`.
+- Only `neuroclient` is published to crates.io.
+- `neuroclient-tui` exact-pins the matching library version and is distributed as Windows
+  binaries through GitHub Releases; other platforms build it from source.
+- See the [0.3-to-0.4 migration guide](crates/neuroclient/docs/migration-0.3-to-0.4.md).
 
 ## Development
 
-```bash
+Contributions are welcome. Run the relevant checks before opening a pull request:
+
+```console
 cargo fmt --all --check
 cargo check --workspace
-cargo clippy -p emotiv-cortex-v2 --lib --no-default-features --features rustls-tls,config-toml -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+cargo clippy -p neuroclient --lib --no-default-features \
+  --features rustls-tls,config-toml -- -D warnings \
+  -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic \
+  -D clippy::todo -D clippy::unimplemented
 
 # feature matrix
-cargo check -p emotiv-cortex-v2 --no-default-features --features rustls-tls,config-toml
-cargo check -p emotiv-cortex-v2 --no-default-features --features native-tls,config-toml
-cargo test -p emotiv-cortex-v2 --no-default-features --features rustls-tls,config-toml --tests
+cargo check -p neuroclient --no-default-features --features rustls-tls,config-toml
+cargo check -p neuroclient --no-default-features --features native-tls,config-toml
+cargo test -p neuroclient --no-default-features --features rustls-tls,config-toml --tests
 ```
 
 ### Pre-commit and pre-push gates
 
 This repo provides a `pre-commit` configuration with local gates:
 
-- **pre-commit**: `rustfmt` + strict `clippy` for `emotiv-cortex-v2` and `emotiv-cortex-tui`
+- **pre-commit**: `rustfmt` + strict `clippy` for `neuroclient` and `neuroclient-tui`
 - **pre-push**:
   - test baseline (`rustls`)
-  - doctests for `emotiv-cortex-v2`
+  - doctests for `neuroclient`
   - rustdoc builds for both crates with warnings denied
-  - workspace coverage gate (line coverage >= 50%)
+  - workspace coverage gate using the floor in `ci/quality-thresholds.env`
 
 Install and run checks with **uv** (recommended):
 
-```bash
+```console
 uv sync
 cargo install cargo-llvm-cov   # needed for pre-push coverage gate
 uv run pre-commit -- run --all-files
 uv run pre-commit -- run --all-files --hook-stage pre-push
 ```
 
-Use the repo githooks so Git runs pre-commit via uv (required for hooks to work without a global `pre-commit`). **Do not use `--no-verify`** on commit/push or you bypass these gates:
+Use the repository hooks so Git runs pre-commit through uv:
 
-```bash
+```console
 git config core.hooksPath .githooks
 ```
 
-Or install pre-commit yourself and use its hooks (requires `pre-commit` on PATH, e.g. `pipx install pre-commit`):
+Do not use `--no-verify` with commits or pushes; it bypasses these quality gates.
 
-```bash
-pipx install pre-commit
-pre-commit install --hook-type pre-commit --hook-type pre-push
-```
-
-Pedantic linting remains non-blocking for now:
-
-```bash
-cargo clippy -p emotiv-cortex-v2 --lib --no-default-features --features rustls-tls,config-toml -- -W clippy::pedantic
-cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui --no-default-features -- -W clippy::pedantic
-```
+CI denies all Clippy warnings, including pedantic lints. Coverage and other quality floors
+live in `ci/quality-thresholds.env` and are only raised by the scheduled Quality Ratchet.
 
 ## Status and disclaimer
 
-**Pre-release.** These crates are under active development. APIs and behavior may change; treat as pre-release software when integrating or depending on them.
+**Pre-release.** APIs and behavior may change.
 
-**Not affiliated with Emotiv.** This project is independent, community-maintained, and is **not** created by, affiliated with, supported by, sponsored by, or endorsed by Emotiv, Inc. Emotiv and Emotiv Cortex are trademarks of Emotiv, Inc. This repository builds on and interoperates with the Emotiv Cortex API; for official support and products, see [emotiv.com](https://www.emotiv.com/).
+**Hardware validation.** End-to-end physical-hardware testing has only used an Insight
+headset. Other supported models follow the documented Cortex protocol but have not been
+validated on-device. See the evidence-qualified
+[API parity matrix](crates/neuroclient/docs/api-parity.md).
+
+**Not affiliated with Emotiv.** NeuroClient is independent and is not created by, affiliated
+with, supported by, sponsored by, or endorsed by Emotiv, Inc. Emotiv and Emotiv Cortex are
+trademarks of Emotiv, Inc. NeuroClient interoperates with the Emotiv Cortex API. For official
+products and support, visit [emotiv.com](https://www.emotiv.com/).
 
 ## License
 

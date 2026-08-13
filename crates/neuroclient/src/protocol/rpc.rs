@@ -1,0 +1,208 @@
+//! JSON-RPC request/response protocol structures.
+
+use serde::{Deserialize, Serialize};
+
+/// A JSON-RPC 2.0 request to the Cortex API.
+#[derive(Serialize)]
+pub struct CortexRequest {
+    /// Caller-assigned request identifier, echoed back in the response.
+    pub id: u64,
+    /// Protocol version string (always `"2.0"`).
+    pub jsonrpc: &'static str,
+    /// Cortex API method name (e.g. `"queryHeadsets"`, `"authorize"`).
+    pub method: &'static str,
+    /// Optional method parameters. `serde_json::Value` keeps the struct
+    /// generic across all Cortex methods without per-method param types.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+impl CortexRequest {
+    /// Create a new request with the given method and params.
+    #[must_use]
+    pub fn new(id: u64, method: &'static str, params: serde_json::Value) -> Self {
+        let params =
+            if params.is_object() && params.as_object().is_some_and(serde_json::Map::is_empty) {
+                None
+            } else {
+                Some(params)
+            };
+
+        Self {
+            jsonrpc: "2.0",
+            id,
+            method,
+            params,
+        }
+    }
+}
+
+/// Manual `Debug` that redacts `params`.
+///
+/// Request params routinely carry `clientSecret`, `cortexToken`, and
+/// license values; only their presence is reported.
+impl std::fmt::Debug for CortexRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CortexRequest")
+            .field("id", &self.id)
+            .field("jsonrpc", &self.jsonrpc)
+            .field("method", &self.method)
+            .field("params", &self.params.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+/// A JSON-RPC 2.0 response from the Cortex API.
+#[derive(Deserialize)]
+pub struct CortexResponse {
+    /// Request identifier echoed from the corresponding [`CortexRequest`].
+    /// `None` for server-initiated notifications.
+    pub id: Option<u64>,
+    /// Successful result payload, mutually exclusive with [`error`](Self::error).
+    pub result: Option<serde_json::Value>,
+    /// Error payload, mutually exclusive with [`result`](Self::result).
+    pub error: Option<RpcError>,
+}
+
+/// Manual `Debug` that redacts `result` and server error text.
+///
+/// Response results carry `cortexToken` and user/record data; only
+/// their presence is reported.
+impl std::fmt::Debug for CortexResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CortexResponse")
+            .field("id", &self.id)
+            .field("result", &self.result.as_ref().map(|_| "<redacted>"))
+            .field("error_code", &self.error.as_ref().map(|error| error.code))
+            .finish()
+    }
+}
+
+/// A JSON-RPC 2.0 error payload from the Cortex API.
+///
+/// This is the raw error object from the protocol. Use
+/// [`CortexError::from_api_error`](crate::CortexError::from_api_error)
+/// to convert to a semantic error type.
+#[derive(Clone, Deserialize)]
+pub struct RpcError {
+    /// Numeric error code defined by the Cortex API (see [`ErrorCodes`](super::constants::ErrorCodes)).
+    pub code: i32,
+    /// Human-readable error description.
+    pub message: String,
+}
+
+impl std::fmt::Debug for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RpcError")
+            .field("code", &self.code)
+            .field("message", &"<redacted>")
+            .finish()
+    }
+}
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Cortex API error {}: {}", self.code, self.message)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::constants::{ErrorCodes, Methods};
+
+    #[test]
+    fn test_serialize_request_no_params() {
+        // Empty params should be omitted entirely (matching official Cortex examples)
+        let req = CortexRequest::new(1, Methods::QUERY_HEADSETS, serde_json::json!({}));
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains("\"jsonrpc\":\"2.0\""));
+        assert!(json.contains("\"method\":\"queryHeadsets\""));
+        assert!(
+            !json.contains("\"params\""),
+            "empty params should be omitted: {json}"
+        );
+    }
+
+    #[test]
+    fn test_serialize_request_with_params() {
+        let req = CortexRequest::new(
+            1,
+            Methods::AUTHORIZE,
+            serde_json::json!({"clientId": "abc", "clientSecret": "xyz"}),
+        );
+
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(
+            json.contains("\"params\""),
+            "non-empty params should be present: {json}"
+        );
+        assert!(json.contains("\"clientId\":\"abc\""));
+    }
+
+    #[test]
+    fn test_request_debug_redacts_params() {
+        let req = CortexRequest::new(
+            7,
+            Methods::AUTHORIZE,
+            serde_json::json!({"clientSecret": "SENTINEL-SECRET-abc"}),
+        );
+
+        let debug = format!("{req:?}");
+        assert!(
+            !debug.contains("SENTINEL-SECRET-abc"),
+            "params leaked into Debug output: {debug}"
+        );
+        assert!(debug.contains("authorize"));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_response_debug_redacts_result() {
+        let resp: CortexResponse =
+            serde_json::from_str(r#"{"id": 3, "result": {"cortexToken": "SENTINEL-TOKEN-xyz"}}"#)
+                .unwrap();
+
+        let debug = format!("{resp:?}");
+        assert!(
+            !debug.contains("SENTINEL-TOKEN-xyz"),
+            "result leaked into Debug output: {debug}"
+        );
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_response_debug_redacts_error_message() {
+        let resp: CortexResponse = serde_json::from_str(
+            r#"{"id": 4, "error": {"code": -32021, "message": "SENTINEL-SERVER-SECRET"}}"#,
+        )
+        .unwrap();
+
+        let debug = format!("{resp:?}");
+        assert!(
+            !debug.contains("SENTINEL-SERVER-SECRET"),
+            "server error text leaked into Debug output: {debug}"
+        );
+        assert!(debug.contains("-32021"));
+
+        let error_debug = format!("{:?}", resp.error.unwrap());
+        assert!(!error_debug.contains("SENTINEL-SERVER-SECRET"));
+        assert!(error_debug.contains("-32021"));
+    }
+
+    #[test]
+    fn test_deserialize_rpc_error() {
+        let json = r#"{
+            "id": 1,
+            "error": {
+                "code": -32002,
+                "message": "Access denied"
+            }
+        }"#;
+
+        let resp: CortexResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.error.is_some());
+        assert_eq!(resp.error.unwrap().code, ErrorCodes::ACCESS_DENIED);
+    }
+}

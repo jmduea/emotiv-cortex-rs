@@ -11,16 +11,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  v2-dry-run:
-    name: cargo publish --dry-run (emotiv-cortex-v2)
+  library-dry-run:
+    name: cargo publish --dry-run (neuroclient)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Dry run emotiv-cortex-v2
-        run: cargo publish --dry-run -p emotiv-cortex-v2
+      - name: Dry run neuroclient
+        run: cargo publish --dry-run -p neuroclient
 
   tui-binary-preflight:
     name: TUI binary release preflight
@@ -30,21 +30,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build emotiv-cortex-tui (release, no LSL)
-        run: cargo build -p emotiv-cortex-tui --release --no-default-features
+      - name: Build neuroclient-tui (release, no LSL)
+        run: cargo build -p neuroclient-tui --release --no-default-features
 
       - name: Stash baseline binary
-        run: Copy-Item target/release/emotiv-cortex-tui.exe target/release/emotiv-cortex-tui-nolsl.exe
+        run: Copy-Item target/release/neuroclient-tui.exe target/release/neuroclient-tui-nolsl.exe
 
-      - name: Build emotiv-cortex-tui (release, with LSL)
-        run: cargo build -p emotiv-cortex-tui --release --no-default-features --features lsl
+      - name: Build neuroclient-tui (release, with LSL)
+        run: cargo build -p neuroclient-tui --release --no-default-features --features lsl
 
       - name: Stage release asset names
         run: |
-          Copy-Item target/release/emotiv-cortex-tui-nolsl.exe emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
-          Copy-Item target/release/emotiv-cortex-tui.exe emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe
+          Copy-Item target/release/neuroclient-tui-nolsl.exe neuroclient-tui-x86_64-pc-windows-msvc.exe
+          Copy-Item target/release/neuroclient-tui.exe neuroclient-tui-x86_64-pc-windows-msvc-lsl.exe
 
       - name: Verify staged release assets
         run: |
-          Get-Item emotiv-cortex-tui-x86_64-pc-windows-msvc.exe
-          Get-Item emotiv-cortex-tui-x86_64-pc-windows-msvc-lsl.exe
+          Get-Item neuroclient-tui-x86_64-pc-windows-msvc.exe
+          Get-Item neuroclient-tui-x86_64-pc-windows-msvc-lsl.exe

@@ -13,23 +13,25 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
-      - id: clippy-v2-strict
-        name: clippy strict (emotiv-cortex-v2)
+      - id: clippy-library-strict
+        name: clippy strict (neuroclient)
         entry: >
-          cargo clippy -p emotiv-cortex-v2 --lib
+          cargo clippy -p neuroclient --lib
           --no-default-features --features rustls-tls,config-toml
-          -- -D clippy::unwrap_used -D clippy::expect_used
+          -- -D warnings
+          -D clippy::unwrap_used -D clippy::expect_used
           -D clippy::panic -D clippy::todo -D clippy::unimplemented
         language: system
         pass_filenames: false
         stages: [pre-commit]
 
       - id: clippy-cli-strict
-        name: clippy strict (emotiv-cortex-tui)
+        name: clippy strict (neuroclient-tui)
         entry: >
-          cargo clippy -p emotiv-cortex-tui --bin emotiv-cortex-tui
+          cargo clippy -p neuroclient-tui --bin neuroclient-tui
           --no-default-features
-          -- -D clippy::unwrap_used -D clippy::expect_used
+          -- -D warnings
+          -D clippy::unwrap_used -D clippy::expect_used
           -D clippy::panic -D clippy::todo -D clippy::unimplemented
         language: system
         pass_filenames: false
@@ -38,25 +40,25 @@ repos:
       - id: tests-rustls
         name: tests (rustls matrix baseline)
         entry: >
-          cargo test -p emotiv-cortex-v2
+          cargo test -p neuroclient
           --no-default-features --features rustls-tls,config-toml
         language: system
         pass_filenames: false
         stages: [pre-push]
 
-      - id: doctest-v2
-        name: doctest (emotiv-cortex-v2)
+      - id: doctest-library
+        name: doctest (neuroclient)
         entry: >
-          cargo test -p emotiv-cortex-v2 --doc
+          cargo test -p neuroclient --doc
           --no-default-features --features rustls-tls,config-toml
         language: system
         pass_filenames: false
         stages: [pre-push]
 
-      - id: rustdoc-v2-deny-warnings
-        name: rustdoc warnings denied (emotiv-cortex-v2)
+      - id: rustdoc-library-deny-warnings
+        name: rustdoc warnings denied (neuroclient)
         entry: >
-          cargo rustdoc -p emotiv-cortex-v2
+          cargo rustdoc -p neuroclient
           --no-default-features --features rustls-tls,config-toml
           -- -D warnings
         language: system
@@ -64,9 +66,9 @@ repos:
         stages: [pre-push]
 
       - id: rustdoc-cli-deny-warnings
-        name: rustdoc warnings denied (emotiv-cortex-tui)
+        name: rustdoc warnings denied (neuroclient-tui)
         entry: >
-          cargo rustdoc -p emotiv-cortex-tui
+          cargo rustdoc -p neuroclient-tui
           --no-default-features
           -- -D warnings
         language: system
@@ -74,10 +76,11 @@ repos:
         stages: [pre-push]
 
       - id: coverage-gate
-        name: coverage gate (workspace, line >= 48%)
+        name: coverage gate (workspace threshold file)
         entry: >
-          cargo llvm-cov --workspace --all-targets
-          --summary-only --fail-under-lines 48
+          bash -c 'set -a; . ci/quality-thresholds.env; set +a;
+          exec cargo llvm-cov --workspace --all-targets
+          --summary-only --fail-under-lines "$COVERAGE_MIN_LINES"'
         language: system
         pass_filenames: false
         stages: [pre-push]

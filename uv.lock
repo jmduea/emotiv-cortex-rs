@@ -21,34 +21,6 @@ wheels = [
 ]
 
 [[package]]
-name = "emotiv-cortex-rs"
-version = "0.0.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "pre-commit" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pre-commit" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "pre-commit" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pre-commit", specifier = ">=3.7.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.7.0" },
-]
-provides-extras = ["dev"]
-
-[package.metadata.requires-dev]
-dev = [{ name = "pre-commit", specifier = ">=3.7.0" }]
-
-[[package]]
 name = "filelock"
 version = "3.24.3"
 source = { registry = "https://pypi.org/simple" }
@@ -65,6 +37,21 @@ sdist = { url = "https://files.pythonhosted.org/packages/5b/8d/e8b97e6bd3fb6fb27
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b8/58/40fbbcefeda82364720eba5cf2270f98496bdfa19ea75b4cccae79c698e6/identify-2.6.16-py2.py3-none-any.whl", hash = "sha256:391ee4d77741d994189522896270b787aed8670389bfd60f326d677d64a6dfb0", size = 99202, upload-time = "2026-01-12T18:58:56.627Z" },
 ]
+
+[[package]]
+name = "neuroclient-workspace"
+version = "0.0.0"
+source = { virtual = "." }
+
+[package.dev-dependencies]
+dev = [
+    { name = "pre-commit" },
+]
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pre-commit", specifier = ">=3.7.0" }]
 
 [[package]]
 name = "nodeenv"

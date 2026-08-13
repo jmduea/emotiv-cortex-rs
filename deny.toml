@@ -8,8 +8,13 @@ targets = [
 ]
 
 [advisories]
+# Vulnerability advisories are errors by default (cargo-deny v2 schema).
 unmaintained = "workspace"
 unsound = "all"
+yanked = "deny"
+# Any exception added to `ignore` must reference exactly one advisory ID and
+# carry a comment with: rationale, owner, and expiry date (YYYY-MM-DD).
+ignore = []
 
 [bans]
 multiple-versions = "warn"
@@ -30,4 +35,6 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # CA certificate bundle data shipped by webpki-roots (Mozilla trust store).
+    "CDLA-Permissive-2.0",
 ]

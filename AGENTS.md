@@ -1,149 +1,68 @@
-# Project Agent Guidelines
+# NeuroClient Agent Guidelines
 
-## Default Project Settings
+## Project scope
 
-When creating Rust projects or Cargo.toml files, ALWAYS use:
+NeuroClient is an independent Rust client for the Emotiv Cortex v2 API. It is not an
+official Emotiv project. Keep vendor and protocol names where they identify compatibility;
+use NeuroClient for project-owned names, metadata, binaries, and documentation.
 
-```toml
-[package]
-edition = "2024"
-rust-version = "1.85"
+## Rust toolchains
 
-[lints.rust]
-unsafe_code = "warn"
+- Use Rust edition 2024.
+- `neuroclient` supports Rust 1.85.
+- `neuroclient-tui` supports Rust 1.88 because of its Ratatui dependency.
+- Keep workspace lints at `unsafe_code = "warn"`, `clippy::all = "warn"`, and
+  `clippy::pedantic = "warn"`.
+- Do not raise either MSRV without an explicit compatibility decision and matching CI changes.
 
-[lints.clippy]
-all = "warn"
-pedantic = "warn"
+## Code standards
+
+- Use `snake_case` for functions and variables, `PascalCase` for types and traits, and
+  `SCREAMING_SNAKE_CASE` for constants.
+- Keep lines at or below 100 characters where practical.
+- In library code, propagate typed errors with `Result` and `?`; do not use `unwrap`,
+  `expect`, `panic`, `todo`, or `unimplemented`.
+- Avoid holding synchronization guards across `.await`.
+- Preserve wire-level Cortex field names and method names exactly.
+- Every `unsafe` block must have an adjacent `// SAFETY:` comment that states its invariant.
+
+## Tooling
+
+- Use `uv` for Python execution and tooling. Do not add bare `python` commands to scripts,
+  documentation, or automation.
+- Prefer `rtk` for verbose shell commands, including each command in a chain.
+- Before relying on RTK in a new environment, run `rtk --version` and `rtk gain`.
+
+## Git hooks
+
+- Never use `--no-verify` with `git commit` or `git push`.
+- Configure repository hooks with `git config core.hooksPath .githooks`.
+- Hooks run through `uv`; do not require a globally installed `pre-commit`.
+
+## Required verification
+
+Run checks proportional to the change. Before release or broad refactors, run the full matrix:
+
+```bash
+rtk cargo fmt --all --check
+rtk cargo check --workspace
+rtk cargo test --workspace
+rtk cargo clippy --workspace --all-targets -- -D warnings
+rtk cargo test -p neuroclient --doc
+rtk cargo rustdoc -p neuroclient -- -D warnings
+rtk cargo rustdoc -p neuroclient-tui -- -D warnings
+rtk cargo audit
+rtk cargo deny check
 ```
 
-## Core Capabilities
+Also verify `neuroclient` with Rust 1.85 and `neuroclient-tui` with Rust 1.88. The coverage
+floor is defined only in `ci/quality-thresholds.env`; workflows and documentation must not
+hard-code a conflicting value.
 
-### 1. Question Routing
+## Documentation and releases
 
-Route Rust questions to appropriate skills:
-
-- Ownership/borrowing → m01-ownership
-- Smart pointers → m02-resource
-- Error handling → m06-error-handling
-- Concurrency → m07-concurrency
-- Unsafe code → unsafe-checker
-
-### 2. Code Style
-
-Follow Rust coding guidelines:
-
-- Use snake_case for variables and functions
-- Use PascalCase for types and traits
-- Use SCREAMING_SNAKE_CASE for constants
-- Max line length: 100 characters
-- Use `?` operator instead of `unwrap()` in library code
-
-### 3. Error Handling
-
-```rust
-// Good: Use Result with context
-fn read_config() -> Result<Config, ConfigError> {
-    let content = std::fs::read_to_string("config.toml")
-        .map_err(|e| ConfigError::Io(e))?;
-    toml::from_str(&content)
-        .map_err(|e| ConfigError::Parse(e))
-}
-
-// Avoid: unwrap() in library code
-fn read_config() -> Config {
-    let content = std::fs::read_to_string("config.toml").unwrap(); // Bad
-    toml::from_str(&content).unwrap() // Bad
-}
-```
-
-### 4. Unsafe Code
-
-Every `unsafe` block MUST have a `// SAFETY:` comment:
-
-```rust
-// SAFETY: We checked that index < len above, so this is in bounds
-unsafe { slice.get_unchecked(index) }
-```
-
-### 5. Common Error Fixes
-
-| Error | Cause | Fix |
-|-------|-------|-----|
-| E0382 | Use of moved value | Clone, borrow, or use reference |
-| E0597 | Lifetime too short | Extend lifetime or restructure |
-| E0502 | Borrow conflict | Split borrows or use RefCell |
-| E0499 | Multiple mut borrows | Restructure to single mut borrow |
-| E0277 | Missing trait impl | Add trait bound or implement trait |
-
-## Quick Reference
-
-### Ownership
-
-- Each value has one owner
-- Borrowing: `&T` (shared) or `&mut T` (exclusive)
-- Lifetimes: `'a` annotations for references
-
-### Smart Pointers
-
-- `Box<T>`: Heap allocation
-- `Rc<T>`: Reference counting (single-threaded)
-- `Arc<T>`: Atomic reference counting (thread-safe)
-- `RefCell<T>`: Interior mutability
-
-### Concurrency
-
-- `Send`: Safe to transfer between threads
-- `Sync`: Safe to share references between threads
-- `Mutex<T>`: Mutual exclusion
-- `RwLock<T>`: Reader-writer lock
-
-### Async
-
-```rust
-#[tokio::main]
-async fn main() {
-    let handle = tokio::spawn(async {
-        // async work
-    });
-    handle.await.unwrap();
-}
-```
-
-## Skill Files
-
-For detailed guidance, see:
-
-- `skills/rust-router/SKILL.md` - Question routing
-- `skills/coding-guidelines/SKILL.md` - Code style rules
-- `skills/unsafe-checker/SKILL.md` - Unsafe code review
-- `skills/m01-ownership/SKILL.md` - Ownership concepts
-- `skills/m06-error-handling/SKILL.md` - Error patterns
-- `skills/m07-concurrency/SKILL.md` - Concurrency patterns
-
-### Python Command Policy
-
-- Use `uv` for all Python execution and tooling commands.
-- Do not use bare `python` commands in docs, scripts, or automation.
-- Prefer forms such as `uv run --project python ...` (or `uv python --command ...` when needed).
-
-## RTK Command Policy
-
-- Prefer `rtk` as the default proxy for verbose shell commands.
-- Always prefix each command in chains as well (e.g., `rtk git add . && rtk git commit -m "msg"`).
-- RTK passthrough is safe when no dedicated filter exists.
-- Before relying on RTK in a new environment, verify with:
-  - `rtk --version`
-  - `rtk gain`
-- Prefer RTK wrappers for common high-volume output commands:
-  - `git` (`status`, `log`, `diff`, `show`, `add`, `commit`, `push`, `pull`)
-  - `cargo` (`check`, `build`, `clippy`, `test`)
-  - file/search (`ls`, `read`, `grep`, `find`)
-  - `gh` (`pr`, `issue`, `run`), `docker`, `kubectl`
-- In Copilot/VS Code workflows, prefer hook-routed enforcement where available.
-- On Windows + VS Code agent workflows, if command rewrite hooks are not active, use explicit `rtk ...` command prefixes by default.
-
-### Git / pre-commit
-
-- Do **not** use `--no-verify` on `git commit` or `git push`. It bypasses pre-commit/pre-push and defeats the quality gates.
-- If hooks fail (e.g. "pre-commit not found"), direct the user to set `git config core.hooksPath .githooks` so hooks run via `uv run --with pre-commit`.
+- Update README examples, rustdoc, migration notes, and the changelog when public behavior
+  or protocol coverage changes.
+- Keep hardware-validation claims evidence-qualified.
+- Release tags, package versions, the TUI's exact library pin, `Cargo.lock`, the README
+  install snippet, and the changelog release heading must agree.
